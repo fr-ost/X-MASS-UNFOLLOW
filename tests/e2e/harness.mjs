@@ -73,6 +73,9 @@ export async function boot(mockOpts, ctxOpts) {
   };
   H.job = () => H.store("x7.job");
   H.scan = () => H.store("x7.scan");
+  // The review prompt would sit over the finished-run screens in every other
+  // test; only t10_review sees it (boot({ reviewPrompt: true })).
+  if (!(mockOpts && mockOpts.reviewPrompt)) await H.setStore({ "x7.review": { state: "no" } });
   H.waitFor = async (fn, what, timeoutMs = 60000, every = 500) => {
     const until = Date.now() + timeoutMs;
     let last;

@@ -191,7 +191,23 @@
     $("#doneUn").textContent = U.fmt(j.done);
     $("#doneSkip").textContent = U.fmt(j.skipped + j.failed);
     $("#doneTime").textContent = j.finishedAt ? U.dur((j.finishedAt - j.startedAt) / 1000) : "-";
+    maybeAskReview(j);
   }
+
+  // ------------------------------------------------------------------ review prompt
+  let reviewAsked = null;
+  async function maybeAskReview(j) {
+    if (reviewAsked === j.id) return;
+    reviewAsked = j.id;
+    if (!(await U.review.due(j))) return;
+    await U.review.claim(j);
+    setTimeout(() => {
+      if (!$('[data-view="done"]').classList.contains("is-on") || !$("#sheet").hidden) return;
+      $("#rateSheet").hidden = false;
+      setTimeout(() => $("#rateGo").focus(), 50);
+    }, 700);
+  }
+  function closeRate() { $("#rateSheet").hidden = true; }
 
   // live countdown for the run view
   function tickTimer() {
@@ -304,6 +320,11 @@
       if (p && p.run) await p.run();
     });
     document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#sheet").hidden) { e.preventDefault(); closeSheet(); } });
+    $("#rateGo").addEventListener("click", async () => { closeRate(); await U.review.open(); });
+    $("#rateLater").addEventListener("click", () => { closeRate(); U.review.answer("later"); });
+    $("#rateNever").addEventListener("click", () => { closeRate(); U.review.answer("no"); });
+    $("#rateSheet").addEventListener("click", (e) => { if (e.target.id === "rateSheet") { closeRate(); U.review.answer("later"); } });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#rateSheet").hidden) { e.preventDefault(); closeRate(); U.review.answer("later"); } });
   }
 
   // ------------------------------------------------------------------ data

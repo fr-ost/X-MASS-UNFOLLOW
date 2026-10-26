@@ -175,6 +175,22 @@
     renderOverview();
     renderSide();
     if (D.page === "following") renderFollowing(false);
+    if (D.S && D.S.job) maybeAskReview(D.S.job);
+  }
+
+  // Review prompt after a successful run (once per run, shared with the popup)
+  let reviewAsked = null;
+  async function maybeAskReview(j) {
+    if (reviewAsked === j.id) return;
+    reviewAsked = j.id;
+    if (!(await U.review.due(j))) return;
+    await U.review.claim(j);
+    const show = () => {
+      if (!$("#confirm").hidden || !$("#welcome").hidden) return setTimeout(show, 1500);   // never on top of another dialog
+      $("#rateAsk").hidden = false;
+      setTimeout(() => $("#rateAskGo").focus(), 30);
+    };
+    setTimeout(show, 900);
   }
 
   async function loadUsers() {
@@ -1064,6 +1080,14 @@
   function wireDonate() {
     const storeUrl = U.links.store;
     $("#rateLink").href = storeUrl + "/reviews";
+    $("#rateLink").addEventListener("click", () => U.review.answer("rated"));     // reviewed from here: never ask
+
+    const closeRate = (state) => { $("#rateAsk").hidden = true; if (state) U.review.answer(state); };
+    $("#rateAskGo").addEventListener("click", async () => { closeRate(); await U.review.open(); });
+    $("#rateAskLater").addEventListener("click", () => closeRate("later"));
+    $("#rateAskNever").addEventListener("click", () => closeRate("no"));
+    $("#rateAsk").addEventListener("click", (e) => { if (e.target.id === "rateAsk") closeRate("later"); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#rateAsk").hidden) closeRate("later"); });
 
     // In-page jumps scroll without touching the hash (the hash is the router).
     const jump = (id) => (e) => {

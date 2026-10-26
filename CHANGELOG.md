@@ -1,5 +1,18 @@
 # X Mass Unfollow - Changelog
 
+## v7.3.1 - Review prompt
+
+- After a run finishes successfully (at least one account unfollowed), a polite
+  prompt: "Saved you 2 hours of clicking? Leave a 5-star review so we can keep
+  this tool 100% free forever." - in the popup, or in the dashboard if the run
+  finished there. Never both for the same run, and never over another dialog.
+- "Leave a review" opens the extension's Chrome Web Store review page and the
+  prompt never comes back. Using the "Rate it" card on the Donate page counts
+  too. "Don't ask again" also ends it for good.
+- "Maybe later" (or closing the prompt) asks again only after a later
+  successful run at least 3 days on, and never more than 3 times in total.
+- Not shown after a stopped run or a run that unfollowed nobody.
+
 ## v7.3.0 - One Following page, GrowX, polish
 
 - **Not blue** and **Inactive** are now tabs on the Following page, right after

@@ -584,6 +584,15 @@ kbd { font-family: var(--mono); font-size: 12px; padding: 1px 6px; border-radius
 .facts div { display: flex; justify-content: space-between; gap: 12px; padding: 9px 12px; border-radius: 10px; background: var(--surface-2); font-size: 13px; }
 .facts span { color: var(--text-2); }
 
+.rate-ask { text-align: center; width: min(420px, 100%); padding: 28px 26px 18px; }
+.rate-ask .btn-lg { width: 100%; justify-content: center; }
+.rate-stars { display: flex; justify-content: center; gap: 6px; margin-bottom: 14px; color: #F5B301; }
+.rate-stars .ic { width: 30px; height: 30px; fill: currentColor; animation: starPop .5s var(--ease-spring) both; }
+.rate-stars span:nth-child(2) .ic { animation-delay: .06s; } .rate-stars span:nth-child(3) .ic { animation-delay: .12s; }
+.rate-stars span:nth-child(4) .ic { animation-delay: .18s; } .rate-stars span:nth-child(5) .ic { animation-delay: .24s; }
+@keyframes starPop { from { transform: scale(.4); opacity: 0; } to { transform: none; opacity: 1; } }
+.rate-row { margin-top: 8px; }
+.rate-row .btn { color: var(--text-2); }
 .welcome { text-align: center; width: min(520px, 100%); padding: 32px 28px 24px; }
 .welcome-logo { width: 76px; height: 76px; margin-bottom: 14px; filter: drop-shadow(0 12px 24px rgba(79, 70, 229, .35)); animation: floaty 4s var(--ease) infinite; }
 .welcome h2 { font-size: 24px; }

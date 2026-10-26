@@ -28,6 +28,7 @@ never transmitted to the developer:
 - **Last-active results** - when each account you follow last posted (read from X in your own session), so it isn't read twice.
 - **Your unfollow history** - accounts the extension unfollowed, and when.
 - **A daily counter** - timestamps of recent unfollows, to enforce your daily limit.
+- **Your review-prompt answer** - whether you reviewed the extension or dismissed the prompt, so it isn't shown again.
 
 You can delete all of it at any time from **Dashboard -> Settings -> Delete
 all extension data**, or by removing the extension.

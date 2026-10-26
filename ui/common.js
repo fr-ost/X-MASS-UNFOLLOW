@@ -100,6 +100,38 @@
     growx: "https://chromewebstore.google.com/detail/ofiancichfcakbdgekhcahflpoglfgbh"
   };
 
+  // Review prompt, shown after a run finishes successfully.
+  //   - once per run (the popup and the dashboard share this record)
+  //   - "Leave a review" (or the Donate page's "Rate it" card) or "Don't ask again": never again
+  //   - "Maybe later": asks after a later run, at least 3 days on; 3 asks at most
+  // Chrome doesn't tell an extension whether a review was posted, so opening
+  // the review page counts as reviewed.
+  const REVIEW_GAP_MS = 3 * 864e5, REVIEW_MAX_ASKS = 3;
+  U.review = {
+    url: () => U.links.store + "/reviews",
+    async due(job) {
+      if (!job || job.status !== "done" || !(job.done > 0) || !job.id) return false;
+      const r = (await U.get(X7.K.review, null)) || {};
+      if (r.state === "rated" || r.state === "no") return false;
+      if (r.job === job.id || (r.asks || 0) >= REVIEW_MAX_ASKS) return false;
+      if (r.state === "later" && Date.now() - (r.at || 0) < REVIEW_GAP_MS) return false;
+      return true;
+    },
+    // Claim the prompt for this run before showing it, so only one page asks.
+    async claim(job) {
+      const r = (await U.get(X7.K.review, null)) || {};
+      await U.set({ [X7.K.review]: Object.assign(r, { job: job.id, asks: (r.asks || 0) + 1, at: Date.now() }) });
+    },
+    async answer(state) {
+      const r = (await U.get(X7.K.review, null)) || {};
+      await U.set({ [X7.K.review]: Object.assign(r, { state, at: Date.now() }) });
+    },
+    async open() {
+      await U.review.answer("rated");
+      try { await chrome.tabs.create({ url: U.review.url() }); } catch (_) { window.open(U.review.url(), "_blank", "noopener"); }
+    }
+  };
+
   // GrowX (organic X growth) - every [data-growx="placement"] link opens its
   // store page, tagged so installs can be traced back to this extension.
   U.growxUrl = (placement) => U.links.growx + "?utm_source=x-mass-unfollow&utm_medium=extension&utm_campaign=" + encodeURIComponent(placement || "general");

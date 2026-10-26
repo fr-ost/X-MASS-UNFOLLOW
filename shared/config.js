@@ -18,7 +18,8 @@
     health: "x7.health",
     meta: "x7.meta",
     act: "x7.act",             // Scanner: activity-check progress
-    actData: "x7.actData"      // Scanner: { accountId: { t, s, w, at } } last-post results
+    actData: "x7.actData",     // Scanner: { accountId: { t, s, w, at } } last-post results
+    review: "x7.review"        // review prompt: { state: "rated"|"no"|"later", job, asks, at }
   };
 
   // Speed presets. Delays are seconds between unfollows (randomised inside the

@@ -611,6 +611,20 @@
     </div>
   </div>
 
+  <!-- Review prompt: after a run finishes successfully (see U.review) -->
+  <div class="modal-backdrop" id="rateAsk" hidden>
+    <div class="modal rate-ask" role="dialog" aria-modal="true" aria-labelledby="rateAskTitle">
+      <div class="rate-stars" aria-hidden="true"><span data-icon="star"></span><span data-icon="star"></span><span data-icon="star"></span><span data-icon="star"></span><span data-icon="star"></span></div>
+      <h2 id="rateAskTitle">Saved you 2 hours of clicking?</h2>
+      <p>Leave a 5-star review so we can keep this tool 100% free forever.</p>
+      <button class="btn btn-primary btn-lg" id="rateAskGo" data-icon="star"><span>Leave a review</span></button>
+      <div class="btn-row center rate-row">
+        <button class="btn btn-ghost" id="rateAskLater"><span>Maybe later</span></button>
+        <button class="btn btn-ghost" id="rateAskNever"><span>Don't ask again</span></button>
+      </div>
+    </div>
+  </div>
+
   <script src="shared/config.js"></script>
   <script src="ui/common.js"></script>
   <script src="dashboard.js"></script>
