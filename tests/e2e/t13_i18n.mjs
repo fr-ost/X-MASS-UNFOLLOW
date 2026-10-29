@@ -47,7 +47,10 @@ const overflow = (p) => p.evaluate(() => {
   for (const el of document.querySelectorAll(".btn, .pill, .chips button, .seg button, .nav a, .kpi span, .stat span, .tag, .preset b")) {
     const r = el.getBoundingClientRect();
     if (!r.width || el.closest("[hidden]")) continue;
-    if (el.scrollWidth > el.clientWidth + 2) bad.push((el.id || el.className || el.tagName) + ": " + el.textContent.trim().slice(0, 40));
+    const name = (el.id || el.className || el.tagName) + ": " + el.textContent.trim().slice(0, 40);
+    if (el.scrollWidth > el.clientWidth + 2) bad.push(name);
+    // pushed out of the window (rows that scroll sideways on purpose excepted)
+    else if (!el.closest(".seg, .chips") && (r.right > innerWidth + 1 || r.left < -1)) bad.push("off-screen " + name);
   }
   return bad;
 });
@@ -136,7 +139,10 @@ try {
     const pp = await H.popup();
     await pp.waitForSelector("#statusText");
     await sleep(500);
-    assert(!(await overflow(pp)).length && !(await leftovers(pp)).length, `${l}: popup has no overflow and no English left`);
+    const pof = await overflow(pp), pleft = await leftovers(pp);
+    if (pof.length || pleft.length) log("  popup", l, JSON.stringify({ overflow: pof, english: pleft }));
+    assert(!pof.length && !pleft.length, `${l}: popup has no overflow and no English left`);
+    await pp.screenshot({ path: OUT + `/i7-${l}-popup.png` });
     await pp.close();
   }
 

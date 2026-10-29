@@ -40,14 +40,16 @@ try {
   mock.cfg.followersHang = null;
 
   // ---- B: stop the last-active check mid-request -------------------------------
-  mock.cfg.actHang = { ms: 5000 };
+  const served = mock.log.act.length;
+  mock.cfg.actHang = { ms: 4000, once: true };          // hold the first request only
   const r2 = await cmd("actStart", { scope: "all" });
   assert(r2.ok && r2.total > 0, "last-active check started (" + r2.total + " accounts)");
-  await sleep(2500);
+  await sleep(1500);
   await cmd("actStop");
   const a0 = await H.store("x7.act");
   assert(a0.status === "stopped", "activity check stopped");
-  await sleep(7000);
+  await H.waitFor(async () => mock.log.act.length > served, "X to answer the held request", 30000);
+  await sleep(2500);
   const a1 = await H.store("x7.act");
   assert(a1.status === "stopped" && a1.index === a0.index, "it stays stopped after X's late answer (was: " + a1.status + ", " + a0.index + " -> " + a1.index + ")");
   mock.cfg.actHang = null;

@@ -115,7 +115,9 @@ body { background: var(--surface); overflow: hidden; }
 .stat-hot { background: var(--danger-soft); }
 .stat-hot b { color: var(--danger); }
 
-.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.row2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.row2 .btn { min-width: 0; height: auto; min-height: 40px; padding-block: 6px; }
+.row2 .btn > span { white-space: normal; text-align: center; line-height: 1.2; }
 
 .notice { padding: 9px 12px; border-radius: var(--radius); background: var(--warn-soft); color: var(--warn-text); font-size: 12.5px; }
 .notice.is-error { background: var(--danger-soft); color: var(--danger-text); }

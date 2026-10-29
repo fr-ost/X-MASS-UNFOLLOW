@@ -300,6 +300,7 @@ window.addEventListener("scroll",()=>{if(loading||shown>=cells.length)return;if(
       // Hold a request open (and optionally fail it), to stop a check while a request is in flight.
       const hang = isAct ? M.cfg.actHang : op === "Followers" ? M.cfg.followersHang : 0;
       if (hang) {
+        if (hang.once) { if (isAct) M.cfg.actHang = null; else M.cfg.followersHang = null; }
         await new Promise((r) => setTimeout(r, hang.ms || 0));
         if (hang.status) { res.writeHead(hang.status); return res.end(); }
       }

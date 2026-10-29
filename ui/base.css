@@ -180,6 +180,9 @@ a:hover { text-decoration: underline; }
 .btn-lg { height: 52px; font-size: 15px; border-radius: 15px; padding: 0 20px; }
 .btn-sm { height: 32px; padding: 0 12px; font-size: 13px; border-radius: 10px; }
 .btn-block { width: 100%; }
+/* A long translation wraps onto a second line instead of being cut off. */
+.btn-block > span { white-space: normal; text-align: center; line-height: 1.2; }
+.btn-lg.btn-block { height: auto; min-height: 52px; padding-block: 8px; }
 
 .icon-btn {
   appearance: none; border: 1px solid var(--border); background: var(--surface);
