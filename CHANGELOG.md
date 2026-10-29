@@ -1,12 +1,51 @@
 # X Mass Unfollow - Changelog
 
-## v7.3.2 - Review prompt at the daily limit
+## v7.3.2 - Who unfollowed me, follow back, 7 languages
 
-- Big runs can take days, so the review prompt now also appears when the daily
-  limit pauses a run that has unfollowed people - not only when a run finishes.
-- After any ask ("Maybe later", or closed without an answer) it waits at least
-  3 days, so a long run doesn't ask every day. Still 3 asks at most, and never
-  again after "Leave a review" or "Don't ask again".
+- **Who unfollowed me.** After each scan the extension also reads your
+  followers (read-only, paced, resumes where it stopped) and compares them with
+  the previous read. A new **Followers** page lists everyone who unfollowed you
+  with the dates between the two checks, your new followers, and the people you
+  don't follow back. If X returns an incomplete list nothing is compared, so
+  nobody is listed by mistake. Accounts with more than 20,000 followers are
+  checked when you press Check now. The Overview shows the latest unfollowers
+  and the popup a "N people unfollowed you · See who" line.
+- **Follow back and undo.** Select new followers or people you don't follow
+  back and follow them back; in History, select people you unfollowed and
+  press Follow again. Follows use the same pacing, breaks and daily limit as
+  unfollows (the daily count now covers both), with a profile-page fallback,
+  and follow requests to private accounts are recognised.
+- **History** has Unfollowed and Followed tabs.
+- **Grace period.** New Keep rule: keep accounts you followed in the last N
+  days, counted from the scan where an account first appears (existing
+  accounts are not frozen by the first scan after the update).
+- **More filters.** Followers at least / at most, follows ÷ followers, when the
+  account joined X, bio contains / doesn't contain, and writing system.
+- **Saved groups.** Save a selection as a named group from the bulk bar, pick
+  it from the Group menu, keep or delete a group.
+- **Growth chart** on the Overview: following and followers over time (30
+  days, 90 days, all), with a tooltip and a table view for screen readers.
+- **Desktop notifications** (off by default): when a run reaches the daily
+  limit, finishes or needs you, and when people unfollow you. Uses the optional
+  "notifications" permission, requested only when you switch them on.
+- **Multiple X accounts.** Each X account keeps its own scan, whitelist,
+  history, groups and daily count. Sign in to X as another account and its
+  data loads automatically - never in the middle of a run. Settings lists the
+  saved accounts and can delete one account's data.
+- **7 languages**: English, Español, Português (Brasil), हिन्दी, Bahasa
+  Indonesia, Türkçe and العربية, including the store name and description.
+  Follows the browser language or the choice in Settings → Language. Arabic is
+  laid out right to left; numbers and dates follow the language.
+- **Review prompt** also appears when the daily limit pauses a run that has
+  unfollowed people (big runs can take days), waits at least 3 days after any
+  ask, and still asks 3 times at most - never again after "Leave a review" or
+  "Don't ask again".
+- Fixed: a run whose remaining accounts were all skipped (whitelisted or
+  already gone) waited out a break or the daily limit before finishing.
+- Fixed: a scan that failed to start could leave the X tab it opened behind.
+- Fixed: X's "follow request already sent" and "this account blocked you"
+  answers are now shown as such instead of a generic error.
+- Fixed: plural wording ("1 new followers"), and the popup's run counter.
 
 ## v7.3.1 - Review prompt
 

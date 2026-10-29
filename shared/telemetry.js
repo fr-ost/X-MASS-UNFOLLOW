@@ -3,7 +3,7 @@
 // Sends a tiny, anonymous signal so the developer can see growth and catch
 // problems: a random install ID (not derived from the device or the user),
 // the extension version, an install event, a once-a-day "active" ping with the
-// number of unfollows in the last 24h, and an uninstall beacon. Coarse country
+// number of follow/unfollow actions in the last 24h, and an uninstall beacon. Coarse country
 // is read server-side from the network request; the IP itself is never stored.
 //
 // It NEVER sends: your IP, your X/Twitter username or account, your following
@@ -112,14 +112,14 @@
   }
 
   // At most once per UTC day, when the extension is actually used.
-  // `unfollows24h` is an aggregate count only.
-  async function active(unfollows24h) {
+  // `actions24h` (follows + unfollows) is an aggregate count only.
+  async function active(actions24h) {
     if (!(await enabled())) return;
     const d = new Date().toISOString().slice(0, 10);
     if ((await get(K.day, null)) === d) return;
     await set({ [K.day]: d });
     await syncUninstallUrl();
-    await send([{ t: "active", ts: Date.now(), n: Math.max(0, Math.round(Number(unfollows24h) || 0)) }]);
+    await send([{ t: "active", ts: Date.now(), n: Math.max(0, Math.round(Number(actions24h) || 0)) }]);
   }
 
   root.X7Telemetry = { onInstall, active, syncUninstallUrl, id };

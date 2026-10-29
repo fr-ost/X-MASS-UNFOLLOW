@@ -1,12 +1,16 @@
 // X Mass Unfollow - background.js (service worker)
 //
-// The engine. It owns every run from start to finish:
+// The engine. It owns every task from start to finish:
 //
-//   scan   read your whole following list, a page at a time, through X's
-//          own API (or, if X rejects that, by scrolling the Following page)
-//   run    work through a queue of accounts one unfollow at a time, with
-//          randomised pacing, rests, a rolling daily cap, and automatic
-//          backing off when X asks for it
+//   scan       read your whole following list, a page at a time, through X's
+//              own API (or, if X rejects that, by scrolling the Following page)
+//   run        work through a queue of accounts one action at a time
+//              (unfollow, or follow for "re-follow" and "follow back"), with
+//              randomised pacing, rests, a rolling daily cap, and automatic
+//              backing off when X asks for it
+//   followers  read your followers list and compare it with the last read:
+//              who unfollowed you, who is new, who you don't follow back
+//   activity   read when accounts last posted (the Inactive tab)
 //
 // Why the worker and not the x.com tab (as in v6):
 //   A page script lives and dies with its tab. Switch tabs and Chrome stops
@@ -15,20 +19,49 @@
 //   20-30 accounts. Here the x.com tab only executes single, short requests
 //   on demand. All state is in chrome.storage, so a closed popup, a reloaded
 //   tab or a restarted worker never loses a run.
+//
+// Each X account has its own data (scan, whitelist, history, daily count...).
+// When you sign in to X as someone else, that account's data loads instead.
 
 importScripts("shared/config.js");
 importScripts("shared/telemetry.js");
+try { importScripts("shared/i18n.js"); } catch (_) {}
+// Every dictionary, so status messages follow the language picked in Settings.
+for (const l of (self.X7I18N ? X7I18N.SUPPORTED : [])) if (l !== "en") { try { importScripts("shared/i18n/" + l + ".js"); } catch (_) {} }
 
 const { K } = X7;
 const X_URLS = ["https://x.com/*", "https://twitter.com/*"];
 const CS_FILES = ["content/txid.js", "content/xapi.js", "content/dom.js", "content/content.js"];
 const ACTIVE_JOB = new Set(["running", "resting"]);
+const UNFINISHED_JOB = new Set(["running", "resting", "paused", "halted"]);
+const FOLLOW_SOURCES = new Set(["refollow", "followback"]);
 const HISTORY_MAX = 20000;
 const DONE_IDS_MAX = 100000;
+const FOLLOWERS_AUTO_MAX = 20000;   // bigger followers lists are read on request only (X limits how fast)
+const FEVENTS_MAX = 5000;
+const SCANLOG_MAX = 400;
 
 const COLORS = {
   run: "#4F46E5", rest: "#F59E0B", scan: "#7C3AED", halt: "#DC2626", done: "#16A34A", paused: "#64748B"
 };
+
+// Interface text. The worker writes the status messages the popup and the
+// dashboard show, so they are translated here (shared/i18n.js).
+function T(s, v) {
+  if (self.X7I18N) return X7I18N.t(s, v);
+  return String(s).replace(/\{(\w+)\}/g, (m, k) => (v && v[k] != null ? v[k] : m));
+}
+function TN(n, one, other, v) {
+  if (self.X7I18N) return X7I18N.tn(n, one, other, v);
+  return T(n === 1 ? one : other, Object.assign({ n: Number(n).toLocaleString(loc()) }, v || {}));
+}
+async function syncLanguage() {
+  if (!self.X7I18N) return;
+  try {
+    const s = await getSettings();
+    X7I18N.use(s.lang === "auto" ? chrome.i18n.getUILanguage() : s.lang);
+  } catch (_) {}
+}
 
 // ===========================================================================
 // Storage helpers
@@ -76,7 +109,25 @@ async function addDone(id) {
   await save({ [K.doneIds]: arr });
 }
 
-// Rolling 24h ledger of unfollow timestamps (the daily cap).
+// Followed again: the account is no longer "unfollowed".
+async function removeDone(id) {
+  if (!id) return;
+  const set = await getDoneIds();
+  if (!set.delete(id)) return;
+  await save({ [K.doneIds]: [...set] });
+}
+
+// Who you follow right now, as far as this extension knows: the last scan,
+// minus anyone it unfollowed since.
+async function followingIds() {
+  const [users, done] = await Promise.all([getScanUsers(), getDoneIds()]);
+  const out = new Set();
+  for (const u of users) if (!done.has(u.i)) out.add(u.i);
+  return out;
+}
+
+// Rolling 24h ledger of follow/unfollow timestamps (the daily cap: X counts
+// both kinds of action towards its limit).
 async function getLedger() {
   const cutoff = Date.now() - 86400000;
   const arr = await load(K.ledger, []);
@@ -89,32 +140,154 @@ async function pushLedger() {
   return l.length;
 }
 
-async function pushHistory(t, source) {
+// kind: "u" (unfollow, the default and left out) or "f" (follow)
+async function pushHistory(t, source, kind) {
   const h = await load(K.history, []);
   const arr = Array.isArray(h) ? h : [];
-  arr.push({ i: t.i || null, h: t.h || "", n: t.n || "", a: t.a || "", t: Date.now(), s: source || "" });
+  const rec = { i: t.i || null, h: t.h || "", n: t.n || "", a: t.a || "", t: Date.now(), s: source || "" };
+  if (kind === "f") rec.k = "f";
+  arr.push(rec);
   if (arr.length > HISTORY_MAX) arr.splice(0, arr.length - HISTORY_MAX);
   await save({ [K.history]: arr });
+}
+
+// When each followed account first showed up. Accounts you follow through the
+// extension count as followed now.
+async function markFirstSeen(id) {
+  if (!id) return;
+  const fs = (await load(K.firstSeen, null)) || {};
+  fs[id] = Date.now();
+  await save({ [K.firstSeen]: fs });
 }
 
 const rand = (a, b) => a + Math.random() * (b - a);
 
 // Anonymous "active" ping, at most once a day (deduped inside telemetry).
-// Carries only the count of unfollows in the last 24h, nothing identifying.
+// Carries only the count of follow/unfollow actions in the last 24h.
 function pingActive() {
   try { getLedger().then((l) => X7Telemetry.active(l.length)).catch(() => {}); } catch (_) {}
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const clock = (ts) => new Date(ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+// Numbers and times in status messages follow the interface language.
+const loc = () => (self.X7I18N ? X7I18N.locale : undefined);
+const clock = (ts) => new Date(ts).toLocaleTimeString(loc(), { hour: "numeric", minute: "2-digit" });
+
+// ===========================================================================
+// Accounts. Everything in X7.PROFILE_KEYS belongs to one X account (the
+// "owner"). When X is signed in as another account, the current set is put
+// aside under "x7.p.<id>" and that account's own set is loaded - never while
+// a scan or an unfinished run needs the current set.
+// ===========================================================================
+const PKEY = (id) => "x7.p." + id;
+
+async function noteProfile(acc) {
+  if (!acc || !acc.id) return;
+  const idx = (await load(K.profiles, null)) || {};
+  const old = idx[acc.id] || {};
+  idx[acc.id] = { h: acc.handle || old.h || "", n: acc.name || old.n || "", a: acc.avatar || old.a || "", at: Date.now() };
+  await save({ [K.profiles]: idx });
+}
+
+function resetCaches() {
+  mem.scanUsers = null; mem.scanSeen = null; mem.followerIds = null; mem.liveCursor = undefined; mem.doneIds = null;
+  actMem.data = null; actMem.src = null; actMem.byId = null;
+  folMem.ids = null; folMem.fans = null;
+}
+
+async function busyFor() {
+  const [scan, job] = await Promise.all([load(K.scan, null), load(K.job, null)]);
+  if (scan && scan.status === "running") return "scan";
+  if (job && UNFINISHED_JOB.has(job.status)) return "job";
+  return null;
+}
+
+// Make `id` the account whose data is loaded.
+async function useProfile(id) {
+  if (!id) return { ok: true };
+  const owner = await load(K.owner, null);
+  if (owner === id) return { ok: true };
+  if (!owner) { await save({ [K.owner]: id }); return { ok: true, adopted: true }; }
+  const busy = await busyFor();
+  if (busy) return { ok: false, busy, owner, want: id };
+  // Read-only background work for the previous account stops here.
+  const act = await load(K.act, null);
+  if (act && act.status === "running") await finishAct(act, "stopped", T("Stopped because you switched X accounts. What was read is kept."));
+  const fol = await load(K.fol, null);
+  if (fol && fol.status === "running") await finishFol(fol, "stopped", T("Stopped because you switched X accounts."));
+
+  const cur = await chrome.storage.local.get(X7.PROFILE_KEYS);
+  const next = (await load(PKEY(id), null)) || {};
+  const set = { [K.owner]: id, [PKEY(owner)]: cur };
+  const remove = [PKEY(id)];
+  for (const k of X7.PROFILE_KEYS) { if (next[k] !== undefined) set[k] = next[k]; else remove.push(k); }
+  resetCaches();
+  await chrome.storage.local.set(set);
+  await chrome.storage.local.remove(remove);
+  resetCaches();
+  refreshBadge();
+  return { ok: true, switched: true };
+}
+
+async function busyMessage(pr) {
+  const idx = (await load(K.profiles, null)) || {};
+  const who = idx[pr.owner] && idx[pr.owner].h ? "@" + idx[pr.owner].h : T("your other account");
+  return pr.busy === "scan"
+    ? T("A scan for {who} is still running. Wait for it to finish, then try again.", { who })
+    : T("A run for {who} isn't finished. Stop it, or switch back to {who} on X, before using another account.", { who });
+}
+
+async function deleteProfile(id) {
+  const owner = await load(K.owner, null);
+  if (!id || id === owner) return { ok: false, error: T("That's the account in use. Use \"Delete all extension data\" instead.") };
+  const idx = (await load(K.profiles, null)) || {};
+  delete idx[id];
+  await chrome.storage.local.remove(PKEY(id));
+  await save({ [K.profiles]: idx });
+  return { ok: true };
+}
+
+async function migrateProfiles() {
+  if (await load(K.owner, null)) return;
+  const [scan, job, acc] = await Promise.all([load(K.scan, null), load(K.job, null), load(K.account, null)]);
+  const id = (scan && scan.ownerId) || (job && job.ownerId) || (acc && acc.id) || null;
+  if (id) await save({ [K.owner]: id });
+  if (acc && acc.id) await noteProfile(acc);
+}
+
+// ===========================================================================
+// Desktop notifications. Optional: Chrome's "notifications" permission is
+// only requested when the user turns them on in Settings.
+// ===========================================================================
+let notifWired = false;
+function wireNotifications() {
+  if (notifWired || !chrome.notifications || !chrome.notifications.onClicked) return;
+  notifWired = true;
+  chrome.notifications.onClicked.addListener((nid) => {
+    const hash = String(nid).split("|")[1] || "overview";
+    chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html#" + hash) }).catch(() => {});
+    try { chrome.notifications.clear(nid); } catch (_) {}
+  });
+}
+
+async function notify(key, title, message, hash) {
+  try {
+    const s = await getSettings();
+    if (!s.notify || !chrome.notifications || !chrome.notifications.create) return false;
+    wireNotifications();
+    await chrome.notifications.create(key + "|" + (hash || "overview"), {
+      type: "basic", iconUrl: chrome.runtime.getURL("icon128.png"), title, message, priority: 0
+    });
+    return true;
+  } catch (_) { return false; }
+}
 
 // ===========================================================================
 // Keepalive + scheduling
 //
-// A worker with nothing to do is stopped after ~30s. While a scan or run is
-// active, a cheap API call every 20s keeps it up so short waits can use
-// setTimeout. Every wait is ALSO backed by a chrome.alarm, so if Chrome stops
-// the worker anyway, the alarm starts it again and the run continues from
-// storage.
+// A worker with nothing to do is stopped after ~30s. While a task is active,
+// a cheap API call every 20s keeps it up so short waits can use setTimeout.
+// Every wait is ALSO backed by a chrome.alarm, so if Chrome stops the worker
+// anyway, the alarm starts it again and the task continues from storage.
 // ===========================================================================
 let keepTimer = null;
 function keepAlive(on) {
@@ -130,6 +303,9 @@ function scheduleTick(ms) {
   chrome.alarms.create("x7.tick", { when: Date.now() + Math.max(ms + 2000, 30000) });
 }
 
+const jobWake = (job) => (job.status === "resting" ? job.restUntil || 0 : job.nextAt || 0);
+const folWake = (fol) => Math.max(fol.nextAt || 0, fol.waitUntil || 0);
+
 let ticking = false;
 async function tick(reason) {
   if (ticking) return;
@@ -141,10 +317,22 @@ async function tick(reason) {
       await scanStep(scan);
       return;
     }
-    const job = await load(K.job, null);
-    if (job && ACTIVE_JOB.has(job.status)) {
+    const [job, fol] = await Promise.all([load(K.job, null), load(K.fol, null)]);
+    const jobOn = !!(job && ACTIVE_JOB.has(job.status));
+    const folOn = !!(fol && fol.status === "running");
+    if (jobOn) {
       keepAlive(true);
-      await jobStep(job);
+      const now = Date.now();
+      // The followers check reads a different endpoint, so it may use the
+      // quiet gaps of a run - never delaying the next unfollow.
+      if (folOn && !job.inFlight && jobWake(job) - now > 4000 && folWake(fol) <= now) await folStep(fol);
+      else await jobStep(job);
+      if (folOn) await wakeForBoth();
+      return;
+    }
+    if (folOn) {
+      keepAlive(true);
+      await folStep(fol);
       return;
     }
     const act = await load(K.act, null);
@@ -161,6 +349,15 @@ async function tick(reason) {
   } finally {
     ticking = false;
   }
+}
+
+// A run and a followers check share one timer: wake for whichever is due first.
+async function wakeForBoth() {
+  const [job, fol] = await Promise.all([load(K.job, null), load(K.fol, null)]);
+  const times = [];
+  if (job && ACTIVE_JOB.has(job.status)) times.push(jobWake(job));
+  if (fol && fol.status === "running") times.push(folWake(fol));
+  if (times.length) scheduleTick(Math.max(0, Math.min(...times) - Date.now()));
 }
 
 chrome.alarms.onAlarm.addListener((a) => {
@@ -308,6 +505,17 @@ async function acquireTab(preferId, opts) {
   return null;
 }
 
+// Close a tab this extension opened - unless another task still uses it.
+async function closeOwnTab(tabId) {
+  if (tabId == null) return;
+  const [job, fol, act, scan] = await Promise.all([load(K.job, null), load(K.fol, null), load(K.act, null), load(K.scan, null)]);
+  if (job && ACTIVE_JOB.has(job.status) && (job.tabId === tabId || job.workerTabId === tabId)) return;
+  if (fol && fol.status === "running" && fol.tabId === tabId) { if (!fol.ownTab) { fol.ownTab = true; await save({ [K.fol]: fol }); } return; }
+  if (act && act.status === "running" && act.tabId === tabId) return;
+  if (scan && scan.status === "running" && (scan.tabId === tabId || scan.domTab === tabId)) return;
+  try { await chrome.tabs.remove(tabId); } catch (_) {}
+}
+
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   readyWaiters.delete(tabId);
   const job = await load(K.job, null);
@@ -316,6 +524,8 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     if (job.workerTabId === tabId) job.workerTabId = null;
     await save({ [K.job]: job });
   }
+  const fol = await load(K.fol, null);
+  if (fol && fol.tabId === tabId) { fol.tabId = null; fol.ownTab = false; await save({ [K.fol]: fol }); }
 });
 
 // ===========================================================================
@@ -340,15 +550,18 @@ function setBadge(text, color, title) {
 async function refreshBadge() {
   const scan = await load(K.scan, null);
   const job = await load(K.job, null);
-  if (scan && scan.status === "running") return setBadge(short(scan.fetched || 0), COLORS.scan, "Scanning your following list");
+  if (scan && scan.status === "running") return setBadge(short(scan.fetched || 0), COLORS.scan, T("Scanning your following list"));
   if (!job) return setBadge("");
+  const follow = job.kind === "follow";
   switch (job.status) {
-    case "running": return setBadge(short(job.done), COLORS.run, `Unfollowing - ${job.done} of ${job.total}`);
-    case "resting": return setBadge(short(job.done), COLORS.rest, job.message || "Resting");
-    case "paused":  return setBadge("||", COLORS.paused, "Paused");
-    case "halted":  return setBadge("!", COLORS.halt, job.message || "Needs your attention");
+    case "running": return setBadge(short(job.done), COLORS.run, follow
+      ? T("Following - {done} of {total}", { done: job.done, total: job.total })
+      : T("Unfollowing - {done} of {total}", { done: job.done, total: job.total }));
+    case "resting": return setBadge(short(job.done), COLORS.rest, job.message || T("Resting"));
+    case "paused":  return setBadge("||", COLORS.paused, T("Paused"));
+    case "halted":  return setBadge("!", COLORS.halt, job.message || T("Needs your attention"));
     case "done":
-      setBadge("✓", COLORS.done, job.message || "Finished");
+      setBadge("✓", COLORS.done, job.message || T("Finished"));
       chrome.alarms.create("x7.badgeClear", { when: Date.now() + 5 * 60000 });
       return;
     default: return setBadge("");
@@ -361,6 +574,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
   // Data deleted from the dashboard: drop the in-memory copies too.
   if (changes[K.scanUsers] && changes[K.scanUsers].newValue === undefined) { mem.scanUsers = null; mem.scanSeen = null; }
   if (changes[K.doneIds] && changes[K.doneIds].newValue === undefined) mem.doneIds = null;
+  if (changes[K.owner] && changes[K.owner].newValue === undefined) resetCaches();
+  if (changes[K.settings]) syncLanguage();
 });
 
 // ===========================================================================
@@ -379,6 +594,8 @@ async function refreshAccount(tabId) {
       at: Date.now()
     };
     await save({ [K.account]: acc });
+    await noteProfile(acc);
+    await useProfile(acc.id);      // this account's own data (unless a run for another isn't finished)
     return acc;
   }
   if (who && who.ok && !who.signedIn) {
@@ -401,14 +618,22 @@ function scanSummary(users) {
 async function startScan(opts) {
   opts = opts || {};
   const job = await load(K.job, null);
-  if (job && ACTIVE_JOB.has(job.status)) return { ok: false, error: "A run is in progress. Pause or stop it first." };
+  if (job && ACTIVE_JOB.has(job.status)) return { ok: false, error: T("A run is in progress. Pause or stop it first.") };
   const cur = await load(K.scan, null);
   if (cur && cur.status === "running") return { ok: true, already: true };
 
   const got = await acquireTab(null, { create: true });
-  if (!got) return { ok: false, error: "Couldn't open X. Check that x.com loads in this browser." };
+  if (!got) return { ok: false, error: T("Couldn't open X. Check that x.com loads in this browser.") };
   const acc = await refreshAccount(got.tabId);
-  if (!acc) return { ok: false, error: "You're not signed in to X. Sign in at x.com, then scan again.", needLogin: true };
+  if (!acc) {
+    if (got.created) await closeOwnTab(got.tabId);
+    return { ok: false, error: T("You're not signed in to X. Sign in at x.com, then scan again."), needLogin: true };
+  }
+  const pr = await useProfile(acc.id);
+  if (!pr.ok) {
+    if (got.created) await closeOwnTab(got.tabId);
+    return { ok: false, error: await busyMessage(pr) };
+  }
 
   mem.scanUsers = [];
   mem.scanSeen = new Set();
@@ -419,7 +644,7 @@ async function startScan(opts) {
     ownerId: acc.id, handle: acc.handle, expected: acc.following,
     startedAt: Date.now(), cursor: null, pages: 0, fetched: 0, errors: 0, emptyPages: 0,
     tabId: got.tabId, ownTab: got.created, then: opts.then || null,
-    message: "Reading your following list..."
+    message: T("Reading your following list...")
   };
   await save({ [K.scan]: scan, [K.scanUsers]: [] });
   keepAlive(true);
@@ -458,11 +683,27 @@ async function scanFail(scan, message, keepPartial) {
   keepAlive(false);
 }
 
-async function closeOwnTab(tabId) {
-  if (tabId == null) return;
-  const job = await load(K.job, null);
-  if (job && ACTIVE_JOB.has(job.status) && (job.tabId === tabId || job.workerTabId === tabId)) return;
-  try { await chrome.tabs.remove(tabId); } catch (_) {}
+// After a complete scan: remember when each account first showed up (for the
+// "followed recently" Keep rule). The very first time, nobody's start date is
+// known, so everyone counts as followed long ago - nothing gets frozen.
+async function updateFirstSeen(users, startedAt) {
+  const prev = await load(K.firstSeen, null);
+  const baseline = !prev || typeof prev !== "object" || !Object.keys(prev).length;
+  const next = {};
+  for (const u of users) next[u.i] = prev && prev[u.i] !== undefined ? prev[u.i] : (baseline ? 0 : startedAt);
+  await save({ [K.firstSeen]: next });
+}
+
+async function logScan(scan) {
+  const acc = await load(K.account, null);
+  const log = await load(K.scanLog, []);
+  const arr = Array.isArray(log) ? log : [];
+  arr.push({
+    t: scan.finishedAt || Date.now(), fg: scan.total, nf: scan.nonFollowers, mu: scan.mutuals,
+    fl: acc && acc.id === scan.ownerId && typeof acc.followers === "number" ? acc.followers : null
+  });
+  if (arr.length > SCANLOG_MAX) arr.splice(0, arr.length - SCANLOG_MAX);
+  await save({ [K.scanLog]: arr });
 }
 
 async function finishScan(scan) {
@@ -472,22 +713,37 @@ async function finishScan(scan) {
     mem.followerIds = null;
   }
   Object.assign(scan, scanSummary(users), {
-    status: "done", finishedAt: Date.now(), message: "Scan complete.",
+    status: "done", finishedAt: Date.now(), message: T("Scan complete."),
     seconds: Math.round((Date.now() - scan.startedAt) / 1000)
   });
   const then = scan.then;
   scan.then = null;
   await checkpointScan(scan);
+  if (!scan.partial) {
+    await updateFirstSeen(users, scan.startedAt);
+    await logScan(scan);
+  }
+
+  // The tab goes to whatever runs next (a run the user asked for, then the
+  // followers check), and is closed only when nothing needs it.
+  let handedOff = false;
   if (then && then.source) {
     const r = await startJob({ source: then.source, keepTabId: scan.tabId, ownTab: scan.ownTab });
-    if (!r.ok) {
+    if (r.ok) handedOff = true;
+    else {
       scan.message = r.error;
       await save({ [K.scan]: scan });
-      await closeOwnTab(scan.ownTab ? scan.tabId : null);
     }
-  } else {
-    await closeOwnTab(scan.ownTab ? scan.tabId : null);
   }
+  const settings = await getSettings();
+  const acc = await load(K.account, null);
+  const nFollowers = acc && acc.id === scan.ownerId ? acc.followers : null;
+  if (settings.trackFollowers && !scan.partial && scan.method !== "dom" && nFollowers !== 0 &&
+      (nFollowers == null || nFollowers <= FOLLOWERS_AUTO_MAX)) {
+    const r = await startFol({ auto: true, tabId: scan.tabId, ownTab: !handedOff && scan.ownTab });
+    if (r.ok && !r.already) handedOff = true;
+  }
+  if (!handedOff) await closeOwnTab(scan.ownTab ? scan.tabId : null);
 }
 
 async function scanStep(scan) {
@@ -501,8 +757,8 @@ async function scanStep(scan) {
   const got = await acquireTab(scan.tabId, { create: true });
   if (!got) {
     scan.errors++;
-    if (scan.errors > 8) return scanFail(scan, "Couldn't reach an X tab to read your list.", true);
-    scan.message = "Waiting for an X tab...";
+    if (scan.errors > 8) return scanFail(scan, T("Couldn't reach an X tab to read your list."), true);
+    scan.message = T("Waiting for an X tab...");
     await save({ [K.scan]: scan });
     scheduleTick(8000);
     return;
@@ -518,7 +774,7 @@ async function scanStep(scan) {
   const cursor = mem.liveCursor === undefined ? scan.cursor : mem.liveCursor;
   const r = await sendTab(scan.tabId, { x7: "page", op, userId: scan.ownerId, cursor, count: 100 }, 90000);
 
-  if (r.uid && r.uid !== scan.ownerId) return scanFail(scan, "You switched X accounts during the scan. Scan again.", false);
+  if (r.uid && r.uid !== scan.ownerId) return scanFail(scan, T("You switched X accounts during the scan. Scan again."), false);
 
   if (r.ok) {
     scan.errors = 0;
@@ -528,11 +784,13 @@ async function scanStep(scan) {
       for (const u of r.users) mem.followerIds.add(u.i);
       fresh = r.users.length;
       scan.followersRead = mem.followerIds.size;
-      scan.message = `Checking who follows you back... ${scan.followersRead.toLocaleString()}`;
+      scan.message = T("Checking who follows you back... {n}", { n: scan.followersRead.toLocaleString(loc()) });
     } else {
       fresh = addScanUsers(r.users);
       scan.fetched = mem.scanUsers.length;
-      scan.message = `Read ${scan.fetched.toLocaleString()}${scan.expected ? " of ~" + scan.expected.toLocaleString() : ""} accounts`;
+      scan.message = scan.expected
+        ? T("Read {n} of ~{total} accounts", { n: scan.fetched.toLocaleString(loc()), total: scan.expected.toLocaleString(loc()) })
+        : T("Read {n} accounts", { n: scan.fetched.toLocaleString(loc()) });
     }
     scan.emptyPages = fresh ? 0 : scan.emptyPages + 1;
     mem.liveCursor = r.cursor;
@@ -552,7 +810,7 @@ async function scanStep(scan) {
           mem.followerIds = new Set();
           mem.liveCursor = null;
           scan.cursor = null;
-          scan.message = "Checking who follows you back...";
+          scan.message = T("Checking who follows you back...");
           await save({ [K.scan]: scan, [K.scanUsers]: mem.scanUsers });
           scheduleTick(rand(800, 1500));
           return;
@@ -568,7 +826,7 @@ async function scanStep(scan) {
     if (r.rate && r.rate.remaining !== null && r.rate.remaining <= 1 && r.rate.resetAt) {
       gap = Math.max(gap, r.rate.resetAt - Date.now() + 3000);
       scan.waitUntil = Date.now() + gap;
-      scan.message = `X asked for a short break. Continuing at ${clock(scan.waitUntil)}.`;
+      scan.message = T("X asked for a short break. Continuing at {time}.", { time: clock(scan.waitUntil) });
       await checkpointScan(scan);
     }
     scheduleTick(gap);
@@ -579,16 +837,16 @@ async function scanStep(scan) {
     case "rate": {
       const ms = Math.min(Math.max(r.waitMs || 15 * 60000, 60000), 3 * 3600000);
       scan.waitUntil = Date.now() + ms;
-      scan.message = `X asked for a short break. Continuing at ${clock(scan.waitUntil)}.`;
+      scan.message = T("X asked for a short break. Continuing at {time}.", { time: clock(scan.waitUntil) });
       await checkpointScan(scan);
       scheduleTick(ms);
       return;
     }
     case "auth":
-      return scanFail(scan, "You're signed out of X. Sign in, then scan again.", true);
+      return scanFail(scan, T("You're signed out of X. Sign in, then scan again."), true);
     case "locked":
     case "suspended":
-      return scanFail(scan, "X has restricted this account. Open x.com and follow X's instructions first.", true);
+      return scanFail(scan, T("X has restricted this account. Open x.com and follow X's instructions first."), true);
     case "endpoint":
       if (scan.phase === "followers") {
         // Could not resolve relationships: keep what we have, flagged.
@@ -601,8 +859,8 @@ async function scanStep(scan) {
     default: {
       scan.errors++;
       if (r.noAnswer) scan.tabId = null;
-      if (scan.errors > 8) return scanFail(scan, "X kept failing to load your list. Try again in a few minutes.", true);
-      scan.message = "X was slow to answer. Retrying...";
+      if (scan.errors > 8) return scanFail(scan, T("X kept failing to load your list. Try again in a few minutes."), true);
+      scan.message = T("X was slow to answer. Retrying...");
       await save({ [K.scan]: scan });
       scheduleTick(Math.min(60000, 3000 * scan.errors));
     }
@@ -614,14 +872,14 @@ async function switchToDomScan(scan, why) {
   console.warn("[x7] API read unavailable, falling back to page scan:", why);
   const acc = await load(K.account, null);
   const handle = scan.handle || (acc && acc.handle);
-  if (!handle) return scanFail(scan, "Couldn't read your list. Open your profile on X once, then scan again.", true);
+  if (!handle) return scanFail(scan, T("Couldn't read your list. Open your profile on X once, then scan again."), true);
   scan.method = "dom";
   scan.handle = handle;
   scan.stale = 0;
   scan.steps = 0;
   scan.domTab = null;
   scan.apiError = why || null;
-  scan.message = "Reading your list from the Following page. Keep that X tab in front until it finishes.";
+  scan.message = T("Reading your list from the Following page. Keep that X tab in front until it finishes.");
   await save({ [K.scan]: scan });
   scheduleTick(0);
 }
@@ -642,12 +900,12 @@ async function domScanStep(scan) {
     if (!candidate) {
       try { candidate = await chrome.tabs.create({ url, active: true }); } catch (_) {}
     }
-    if (!candidate) return scanFail(scan, "Couldn't open your Following page.", true);
+    if (!candidate) return scanFail(scan, T("Couldn't open your Following page."), true);
     scan.domTab = candidate.id;
     if (!onPage(candidate.url)) {
       if (!await navigate(candidate.id, url, onPage, 45000)) {
         scan.errors++;
-        if (scan.errors > 5) return scanFail(scan, "Your Following page didn't load.", true);
+        if (scan.errors > 5) return scanFail(scan, T("Your Following page didn't load."), true);
       }
     } else if (!await usable(candidate.id)) {
       await inject(candidate.id);
@@ -660,7 +918,7 @@ async function domScanStep(scan) {
   if (!onPage(tab.url)) {
     if (!await navigate(tab.id, url, onPage, 45000)) {
       scan.errors++;
-      if (scan.errors > 5) return scanFail(scan, "Your Following page didn't load.", true);
+      if (scan.errors > 5) return scanFail(scan, T("Your Following page didn't load."), true);
     }
     await save({ [K.scan]: scan });
     scheduleTick(2500);
@@ -668,13 +926,13 @@ async function domScanStep(scan) {
   }
 
   const r = await sendTab(tab.id, { x7: "domScanStep", handle: scan.handle, settleMs: 1100 }, 30000);
-  if (r.uid && r.uid !== scan.ownerId) return scanFail(scan, "You switched X accounts during the scan. Scan again.", false);
+  if (r.uid && r.uid !== scan.ownerId) return scanFail(scan, T("You switched X accounts during the scan. Scan again."), false);
   if (!r.ok) {
     if (r.kind === "auth" || r.kind === "locked" || r.kind === "suspended") {
-      return scanFail(scan, "X needs your attention in the open tab. Sort it out, then scan again.", true);
+      return scanFail(scan, T("X needs your attention in the open tab. Sort it out, then scan again."), true);
     }
     scan.errors++;
-    if (scan.errors > 10) return scanFail(scan, "Couldn't read the Following page.", true);
+    if (scan.errors > 10) return scanFail(scan, T("Couldn't read the Following page."), true);
     if (r.noAnswer && !await usable(tab.id)) await inject(tab.id);
     await save({ [K.scan]: scan });
     scheduleTick(2000);
@@ -682,7 +940,7 @@ async function domScanStep(scan) {
   }
   scan.errors = 0;
   if (r.hidden) {
-    scan.message = "Paused - bring the X tab to the front to keep scanning.";
+    scan.message = T("Paused - bring the X tab to the front to keep scanning.");
     await save({ [K.scan]: scan });
     scheduleTick(2000);
     return;
@@ -692,7 +950,9 @@ async function domScanStep(scan) {
   scan.steps++;
   scan.fetched = mem.scanUsers.length;
   scan.stale = fresh ? 0 : scan.stale + 1;
-  scan.message = `Read ${scan.fetched.toLocaleString()}${scan.expected ? " of ~" + scan.expected.toLocaleString() : ""} accounts (scrolling)`;
+  scan.message = scan.expected
+    ? T("Read {n} of ~{total} accounts (scrolling)", { n: scan.fetched.toLocaleString(loc()), total: scan.expected.toLocaleString(loc()) })
+    : T("Read {n} accounts (scrolling)", { n: scan.fetched.toLocaleString(loc()) });
 
   const finished = r.empty || (scan.stale >= 8 && r.atBottom && !r.loading) || scan.stale >= 30 || scan.steps > 6000;
   if (finished) return finishScan(scan);
@@ -711,15 +971,266 @@ async function stopScan() {
     if (scan.phase === "followers") { scan.phase = "following"; scan.relationshipUnknown = true; }
     await finishScan(scan);
     const s2 = await load(K.scan, null);
-    s2.message = "Scan stopped early - results are partial.";
+    s2.message = T("Scan stopped early - results are partial.");
     await save({ [K.scan]: s2 });
   } else {
     scan.status = "idle";
-    scan.message = "Scan stopped.";
+    scan.message = T("Scan stopped.");
     scan.then = null;
     await save({ [K.scan]: scan });
     await closeOwnTab(scan.ownTab ? scan.tabId : null);
   }
+  return { ok: true };
+}
+
+// ===========================================================================
+// FOLLOWERS CHECK ("Who unfollowed me")
+//
+// Reads your followers list page by page, then compares it with the last
+// complete read: who left, who is new, and who follows you that you don't
+// follow back (fans). Read-only. It starts by itself after a scan (for lists
+// up to FOLLOWERS_AUTO_MAX followers) and may use the quiet gaps of a run.
+//
+// A read that ends early, or that returns far fewer followers than your
+// profile shows, is never compared: an incomplete list would show people as
+// "unfollowed you" who didn't.
+// ===========================================================================
+const folMem = { ids: null, fans: null };
+
+function compactUser(u) {
+  return {
+    i: u.i, h: u.h, n: u.n || "", a: u.a || "", fc: u.fc, fr: u.fr, sc: u.sc, ca: u.ca,
+    v: !!u.v, bv: typeof u.bv === "boolean" ? u.bv : null, p: !!u.p, d: !!u.d, b: String(u.b || "").slice(0, 160)
+  };
+}
+
+// The checkpoint (ids + fans read so far) and the cursor it was taken at are
+// saved together, so a restarted worker resumes without a gap.
+async function folRestore(fol) {
+  if (folMem.ids) return;
+  const p = await load(K.folPartial, null);
+  folMem.ids = new Set((p && p.ids) || []);
+  folMem.fans = (p && p.fans) || [];
+  const ck = fol.ck || { cursor: null, pages: 0 };
+  fol.cursor = ck.cursor;
+  fol.pages = ck.pages;
+  fol.read = folMem.ids.size;
+}
+
+// False once the check was stopped (or a new one started) while this step
+// waited on X - its results then belong to nobody and must not be saved.
+async function folCurrent(fol) {
+  const latest = await load(K.fol, null);
+  return !!(latest && latest.status === "running" && latest.startedAt === fol.startedAt);
+}
+
+async function folCheckpoint(fol) {
+  fol.ck = { cursor: fol.cursor, pages: fol.pages };
+  await save({ [K.fol]: fol, [K.folPartial]: { ids: [...folMem.ids], fans: folMem.fans } });
+}
+
+async function startFol(opts) {
+  opts = opts || {};
+  const cur = await load(K.fol, null);
+  if (cur && cur.status === "running") return { ok: true, already: true };
+  const scan = await load(K.scan, null);
+  if (scan && scan.status === "running") return { ok: false, error: T("Wait for the scan to finish.") };
+
+  let got = null;
+  if (opts.tabId != null && await usable(opts.tabId)) got = { tabId: opts.tabId, created: !!opts.ownTab };
+  if (!got) got = await acquireTab(null, { create: true });
+  if (!got) return { ok: false, error: T("Couldn't open X. Check that x.com loads in this browser.") };
+  const p = await ping(got.tabId);
+  const uid = p && p.uid;
+  if (!uid) { if (got.created) await closeOwnTab(got.tabId); return { ok: false, error: T("You're not signed in to X. Sign in at x.com first."), needLogin: true }; }
+  const pr = await useProfile(uid);
+  if (!pr.ok) { if (got.created) await closeOwnTab(got.tabId); return { ok: false, error: await busyMessage(pr) }; }
+
+  const acc = await load(K.account, null);
+  const expected = acc && acc.id === uid && typeof acc.followers === "number" ? acc.followers : null;
+  folMem.ids = new Set();
+  folMem.fans = [];
+  const fol = {
+    status: "running", ownerId: uid, auto: !!opts.auto, startedAt: Date.now(),
+    cursor: null, ck: { cursor: null, pages: 0 }, pages: 0, read: 0, expected,
+    errors: 0, emptyPages: 0, nextAt: 0, waitUntil: null,
+    tabId: got.tabId, ownTab: !!got.created, message: T("Reading your followers...")
+  };
+  await save({ [K.fol]: fol, [K.folPartial]: { ids: [], fans: [] } });
+  keepAlive(true);
+  scheduleTick(0);
+  return { ok: true, expected };
+}
+
+async function folStep(fol) {
+  await folRestore(fol);
+  const now = Date.now();
+  if (fol.waitUntil && now < fol.waitUntil) { scheduleTick(fol.waitUntil - now); return; }
+  if (fol.nextAt && now < fol.nextAt) { scheduleTick(fol.nextAt - now); return; }
+  fol.waitUntil = null;
+
+  const got = await acquireTab(fol.tabId, { create: true });
+  if (!await folCurrent(fol)) return;
+  if (!got) {
+    fol.errors++;
+    if (fol.errors > 8) return finishFol(fol, "error", T("Couldn't reach an X tab to read your followers."));
+    fol.message = T("Waiting for an X tab...");
+    fol.nextAt = Date.now() + 8000;
+    await save({ [K.fol]: fol });
+    scheduleTick(8000);
+    return;
+  }
+  if (got.tabId !== fol.tabId) { fol.tabId = got.tabId; fol.ownTab = got.created; }
+
+  const r = await sendTab(fol.tabId, { x7: "page", op: "Followers", userId: fol.ownerId, cursor: fol.cursor, count: 100 }, 90000);
+  if (!await folCurrent(fol)) return;
+  if (r.uid && r.uid !== fol.ownerId) return finishFol(fol, "error", T("You switched X accounts during the followers check. Check again."));
+
+  if (r.ok) {
+    fol.errors = 0;
+    fol.pages++;
+    const following = await followingIds();
+    let fresh = 0;
+    for (const u of r.users || []) {
+      if (!u || !u.i || folMem.ids.has(u.i)) continue;
+      folMem.ids.add(u.i);
+      fresh++;
+      const youFollow = typeof u.fw === "boolean" ? u.fw : following.has(u.i);
+      if (!youFollow) folMem.fans.push(compactUser(u));
+    }
+    fol.read = folMem.ids.size;
+    fol.emptyPages = fresh ? 0 : fol.emptyPages + 1;
+    fol.cursor = r.cursor;
+    fol.message = fol.expected
+      ? T("Reading your followers... {n} of ~{total}", { n: fol.read.toLocaleString(loc()), total: fol.expected.toLocaleString(loc()) })
+      : T("Reading your followers... {n}", { n: fol.read.toLocaleString(loc()) });
+    if (r.end || fol.emptyPages >= 3 || fol.pages > 4000) return finishFol(fol, "done");
+
+    let gap = rand(1200, 2600);
+    if (r.rate && r.rate.remaining !== null && r.rate.remaining <= 1 && r.rate.resetAt) {
+      gap = Math.max(gap, r.rate.resetAt - Date.now() + 3000);
+      fol.waitUntil = Date.now() + gap;
+      fol.message = T("X asked for a short break. Continuing at {time}.", { time: clock(fol.waitUntil) });
+    }
+    fol.nextAt = Date.now() + gap;
+    if (fol.pages % 10 === 0 || fol.waitUntil) await folCheckpoint(fol); else await save({ [K.fol]: fol });
+    scheduleTick(gap);
+    return;
+  }
+
+  switch (r.kind) {
+    case "rate": {
+      const ms = Math.min(Math.max(r.waitMs || 15 * 60000, 60000), 3 * 3600000);
+      fol.waitUntil = Date.now() + ms;
+      fol.message = T("X asked for a short break. Continuing at {time}.", { time: clock(fol.waitUntil) });
+      await folCheckpoint(fol);
+      scheduleTick(ms);
+      return;
+    }
+    case "auth":
+      return finishFol(fol, "error", T("You're signed out of X. Sign in, then check again."));
+    case "locked":
+    case "suspended":
+      return finishFol(fol, "error", T("X has restricted this account. Open x.com and follow X's instructions first."));
+    case "endpoint":
+      return finishFol(fol, "error", T("X isn't returning your followers list right now. Try again later."));
+    default:
+      fol.errors++;
+      if (r.noAnswer) fol.tabId = null;
+      if (fol.errors > 8) return finishFol(fol, "error", T("X kept failing to answer. Try again in a few minutes."));
+      fol.message = T("X was slow to answer. Retrying...");
+      fol.nextAt = Date.now() + Math.min(60000, 3000 * fol.errors);
+      await save({ [K.fol]: fol });
+      scheduleTick(fol.nextAt - Date.now());
+  }
+}
+
+function folEvent(k, u, from, at, youFollow) {
+  return { k, i: u.i, h: u.h || "", n: u.n || "", a: u.a || "", fc: typeof u.fc === "number" ? u.fc : null, at, from: from || null, fw: !!youFollow };
+}
+
+async function finishFol(fol, status, message) {
+  await folRestore(fol);
+  const now = Date.now();
+  let lost = 0, gained = 0, baseline = false;
+  if (status === "done") {
+    const ids = folMem.ids;
+    const n = ids.size;
+    const exp = fol.expected;
+    if (exp != null && exp > 0 && n < exp * 0.85 && exp - n > 20) {
+      status = "partial";
+      message = T("X returned {n} of about {total} followers, so they weren't compared this time (that could show people as unfollowing who didn't). Try again later.", { n: n.toLocaleString(loc()), total: exp.toLocaleString(loc()) });
+    } else {
+      const prev = await load(K.followers, null);
+      baseline = !prev || prev.ownerId !== fol.ownerId || !Array.isArray(prev.ids);
+      const events = [];
+      if (!baseline) {
+        const prevIds = new Set(prev.ids);
+        const users = await getScanUsers();
+        const byId = new Map(users.map((u) => [u.i, u]));
+        const prevFans = new Map((prev.fans || []).map((u) => [u.i, u]));
+        const fansNow = new Map(folMem.fans.map((u) => [u.i, u]));
+        const following = await followingIds();
+        for (const id of prevIds) {
+          if (ids.has(id)) continue;
+          events.push(folEvent("lost", byId.get(id) || prevFans.get(id) || { i: id }, prev.at, now, following.has(id)));
+          lost++;
+        }
+        for (const id of ids) {
+          if (prevIds.has(id)) continue;
+          events.push(folEvent("gained", fansNow.get(id) || byId.get(id) || { i: id }, prev.at, now, following.has(id)));
+          gained++;
+        }
+      }
+      const patch = { [K.followers]: { ownerId: fol.ownerId, at: now, total: n, ids: [...ids], fans: folMem.fans } };
+      if (events.length) {
+        const old = await load(K.fevents, []);
+        const all = (Array.isArray(old) ? old : []).concat(events);
+        if (all.length > FEVENTS_MAX) all.splice(0, all.length - FEVENTS_MAX);
+        patch[K.fevents] = all;
+      }
+      // Exact follower count for the charts.
+      const log = await load(K.scanLog, []);
+      const arr = Array.isArray(log) ? log : [];
+      const last = arr[arr.length - 1];
+      if (last && now - last.t < 6 * 3600000) last.fl = n; else arr.push({ t: now, fl: n });
+      if (arr.length > SCANLOG_MAX) arr.splice(0, arr.length - SCANLOG_MAX);
+      patch[K.scanLog] = arr;
+      await save(patch);
+      message = baseline
+        ? T("Saved your {n} followers. From your next scan on, you'll see who unfollows you.", { n: n.toLocaleString(loc()) })
+        : (lost || gained)
+          ? T("Since your last check: {lost}, {gained}.", {
+              lost: TN(lost, "{n} unfollowed you", "{n} unfollowed you"),
+              gained: TN(gained, "{n} new follower", "{n} new followers")
+            })
+          : T("No changes since your last check.");
+      if (lost) {
+        notify("x7-lost", TN(lost, "{n} person unfollowed you", "{n} people unfollowed you"),
+          T("Open X Mass Unfollow to see who."), "followers");
+      }
+    }
+  }
+  const done = {
+    status, ownerId: fol.ownerId, auto: fol.auto, startedAt: fol.startedAt, finishedAt: now,
+    read: folMem.ids ? folMem.ids.size : fol.read, expected: fol.expected, pages: fol.pages,
+    fans: status === "done" ? folMem.fans.length : (fol.fans || null),
+    lost, gained, baseline, message: message || T("Stopped."),
+    tabId: fol.tabId, ownTab: fol.ownTab
+  };
+  folMem.ids = null;
+  folMem.fans = null;
+  await save({ [K.fol]: done });
+  await chrome.storage.local.remove(K.folPartial).catch(() => {});
+  if (done.ownTab) await closeOwnTab(done.tabId);
+  const job = await load(K.job, null);
+  if (!(job && ACTIVE_JOB.has(job.status))) keepAlive(false);
+}
+
+async function stopFol() {
+  const fol = await load(K.fol, null);
+  if (!fol || fol.status !== "running") return { ok: true };
+  await finishFol(fol, "stopped", T("Stopped. Nothing was compared, so no results changed."));
   return { ok: true };
 }
 
@@ -729,8 +1240,8 @@ async function stopScan() {
 // Reads, one profile at a time, when each account last posted. It is
 // read-only: it never follows, unfollows or changes anything. Results are kept
 // per account in K.actData, so a closed tab, a restarted worker or a later
-// session never repeats work. tick() serves scans and unfollow runs first, so
-// this only ever works while nothing else is.
+// session never repeats work. tick() serves scans, runs and the followers
+// check first, so this only ever works while nothing else is.
 //
 // Nothing is guessed: an account whose last post can't be read is recorded as
 // "na" with the reason, and is listed separately in the dashboard.
@@ -748,22 +1259,25 @@ async function getActData() {
 
 async function startAct(opts) {
   opts = opts || {};
-  const scan = await load(K.scan, null);
-  if (scan && scan.status === "running") return { ok: false, error: "Wait for the scan to finish." };
-  if (!scan || scan.status !== "done") return { ok: false, error: "Scan your following list first." };
+  const scan0 = await load(K.scan, null);
+  if (scan0 && scan0.status === "running") return { ok: false, error: T("Wait for the scan to finish.") };
   const job = await load(K.job, null);
-  if (job && ACTIVE_JOB.has(job.status)) return { ok: false, error: "A run is in progress. Pause or stop it first." };
+  if (job && ACTIVE_JOB.has(job.status)) return { ok: false, error: T("A run is in progress. Pause or stop it first.") };
   const cur = await load(K.act, null);
   if (cur && cur.status === "running") return { ok: true, already: true };
 
   const got = await acquireTab(null, { create: true });
-  if (!got) return { ok: false, error: "Couldn't open X. Check that x.com loads in this browser." };
+  if (!got) return { ok: false, error: T("Couldn't open X. Check that x.com loads in this browser.") };
   const p = await ping(got.tabId);
   const uid = p && p.uid;
-  if (!uid) { if (got.created) await closeOwnTab(got.tabId); return { ok: false, error: "You're not signed in to X. Sign in at x.com first.", needLogin: true }; }
+  if (!uid) { if (got.created) await closeOwnTab(got.tabId); return { ok: false, error: T("You're not signed in to X. Sign in at x.com first."), needLogin: true }; }
+  const pr = await useProfile(uid);
+  if (!pr.ok) { if (got.created) await closeOwnTab(got.tabId); return { ok: false, error: await busyMessage(pr) }; }
+  const scan = await load(K.scan, null);
+  if (!scan || scan.status !== "done") { if (got.created) await closeOwnTab(got.tabId); return { ok: false, error: T("Scan your following list first.") }; }
   if (scan.ownerId && scan.ownerId !== uid) {
     if (got.created) await closeOwnTab(got.tabId);
-    return { ok: false, error: "Your scan is for a different X account. Scan again first." };
+    return { ok: false, error: T("Your scan is for a different X account. Scan again first.") };
   }
 
   actMem.data = null;
@@ -789,7 +1303,7 @@ async function startAct(opts) {
   const act = {
     status: "running", scope, retry, ownerId: uid, queue, total: queue.length, index: 0,
     ok: 0, none: 0, na: 0, errors: 0, consecutiveFails: 0, startedAt: now,
-    tabId: got.tabId, ownTab: got.created, message: "Checking when accounts last posted..."
+    tabId: got.tabId, ownTab: got.created, message: T("Checking when accounts last posted...")
   };
   await save({ [K.act]: act });
   keepAlive(true);
@@ -802,8 +1316,8 @@ async function finishAct(act, status, message) {
   act.finishedAt = Date.now();
   act.queue = [];
   act.message = message || (status === "done"
-    ? `Done. ${act.ok.toLocaleString()} read, ${(act.na + act.none).toLocaleString()} without a date.`
-    : "Stopped.");
+    ? T("Done. {ok} read, {na} without a date.", { ok: act.ok.toLocaleString(loc()), na: (act.na + act.none).toLocaleString(loc()) })
+    : T("Stopped."));
   await save({ [K.act]: act });
   keepAlive(false);
   await closeOwnTab(act.ownTab ? act.tabId : null);
@@ -813,8 +1327,13 @@ async function finishAct(act, status, message) {
 async function stopAct() {
   const act = await load(K.act, null);
   if (!act || act.status !== "running") return { ok: true };
-  await finishAct(act, "stopped", `Stopped after ${act.index.toLocaleString()} account${act.index === 1 ? "" : "s"}. What was read is kept.`);
+  await finishAct(act, "stopped", TN(act.index, "Stopped after {n} account. What was read is kept.", "Stopped after {n} accounts. What was read is kept."));
   return { ok: true };
+}
+
+async function actCurrent(act) {
+  const latest = await load(K.act, null);
+  return !!(latest && latest.status === "running" && latest.startedAt === act.startedAt);
 }
 
 async function actStep(act) {
@@ -825,6 +1344,7 @@ async function actStep(act) {
   const u = actMem.byId.get(id);
   const [wl, done] = await Promise.all([getWhitelist(), getDoneIds()]);
   if (!u || done.has(id) || wl.has(String(u.h).toLowerCase())) {        // gone, unfollowed or protected since the queue was built
+    if (!await actCurrent(act)) return;
     act.index++;
     await save({ [K.act]: act });
     scheduleTick(0);
@@ -832,10 +1352,11 @@ async function actStep(act) {
   }
 
   const got = await acquireTab(act.tabId, { create: true });
+  if (!await actCurrent(act)) return;
   if (!got) {
     act.errors++;
-    if (act.errors > 8) return finishAct(act, "error", "Couldn't reach an X tab. What was read is kept.");
-    act.message = "Waiting for an X tab...";
+    if (act.errors > 8) return finishAct(act, "error", T("Couldn't reach an X tab. What was read is kept."));
+    act.message = T("Waiting for an X tab...");
     await save({ [K.act]: act });
     scheduleTick(8000);
     return;
@@ -843,14 +1364,15 @@ async function actStep(act) {
   if (got.tabId !== act.tabId) { act.tabId = got.tabId; act.ownTab = got.created; }
 
   const r = await sendTab(act.tabId, { x7: "lastPost", userId: u.i, posts: typeof u.sc === "number" ? u.sc : null }, 60000);
-  if (r.uid && r.uid !== act.ownerId) return finishAct(act, "error", "You switched X accounts. Check again.");
+  if (!await actCurrent(act)) return;
+  if (r.uid && r.uid !== act.ownerId) return finishAct(act, "error", T("You switched X accounts. Check again."));
 
   const data = await getActData();
   const advance = async (rec, gap) => {
     data[id] = Object.assign(rec, { at: Date.now() });
     act.index++;
     act.errors = 0;
-    act.message = `Checked ${act.index.toLocaleString()} of ${act.total.toLocaleString()}`;
+    act.message = T("Checked {n} of {total}", { n: act.index.toLocaleString(loc()), total: act.total.toLocaleString(loc()) });
     await save({ [K.actData]: data, [K.act]: act });
     if (act.index >= act.queue.length) return finishAct(act, "done");
     scheduleTick(gap);
@@ -874,39 +1396,41 @@ async function actStep(act) {
     case "rate": {
       const ms = Math.min(Math.max(r.waitMs || 15 * 60000, 60000), 3 * 3600000);
       act.waitUntil = Date.now() + ms;
-      act.message = `X asked for a short break. Continuing at ${clock(act.waitUntil)}.`;
+      act.message = T("X asked for a short break. Continuing at {time}.", { time: clock(act.waitUntil) });
       await save({ [K.act]: act });
       scheduleTick(ms);
       return;
     }
     case "auth":
-      return finishAct(act, "error", "You're signed out of X. Sign in, then check again. What was read is kept.");
+      return finishAct(act, "error", T("You're signed out of X. Sign in, then check again. What was read is kept."));
     case "locked":
     case "suspended":
-      return finishAct(act, "error", "X has restricted this account. Open x.com and follow X's instructions first.");
+      return finishAct(act, "error", T("X has restricted this account. Open x.com and follow X's instructions first."));
     case "gone":
       act.na++;
       return advance({ t: null, s: "na", w: "Account not found" }, rand(900, 1600));
     case "endpoint":
       act.consecutiveFails++;
       if (act.consecutiveFails >= 5) {
-        return finishAct(act, "error", "X isn't returning profile posts right now. Try again later. What was read is kept.");
+        return finishAct(act, "error", T("X isn't returning profile posts right now. Try again later. What was read is kept."));
       }
       act.na++;
       return advance({ t: null, s: "na", w: "X didn't return this profile's posts" }, rand(1500, 3000));
     default:
       act.errors++;
       if (r.noAnswer) act.tabId = null;
-      if (act.errors > 6) return finishAct(act, "error", "X kept failing to answer. Try again in a few minutes. What was read is kept.");
-      act.message = "X was slow to answer. Retrying...";
+      if (act.errors > 6) return finishAct(act, "error", T("X kept failing to answer. Try again in a few minutes. What was read is kept."));
+      act.message = T("X was slow to answer. Retrying...");
       await save({ [K.act]: act });
       scheduleTick(Math.min(60000, 3000 * act.errors));
   }
 }
 
 // ===========================================================================
-// RUN (the unfollow queue)
+// RUN (the queue: unfollow, or follow for re-follow / follow back)
 // ===========================================================================
+const twimg = (a) => (/^https:\/\/([a-z0-9-]+\.)*twimg\.com\//i.test(String(a || "")) ? String(a) : "");
+
 async function buildTargets(source, payload) {
   const settings = await getSettings();
   const wl = await getWhitelist();
@@ -915,10 +1439,11 @@ async function buildTargets(source, payload) {
   let list = [];
 
   if (source === "nonfollowers" || source === "all") {
+    const ctx = { firstSeen: (await load(K.firstSeen, null)) || {}, now: Date.now() };
     for (const u of users) {
       if (source === "nonfollowers" && u.fy !== false) continue;
       if (done.has(u.i)) continue;
-      if (X7.keepReason(u, settings, wl)) continue;
+      if (X7.keepReason(u, settings, wl, ctx)) continue;
       list.push(u);
     }
   } else if (source === "ids") {
@@ -937,42 +1462,73 @@ async function buildTargets(source, payload) {
       if (known && done.has(known.i)) continue;
       list.push(known || { i: null, h, n: "", a: "" });
     }
+  } else if (FOLLOW_SOURCES.has(source)) {
+    // People to follow (again): from History or from your followers.
+    const following = await followingIds();
+    const seen = new Set();
+    for (const raw of payload.targets || []) {
+      if (!raw || typeof raw !== "object") continue;
+      const i = /^\d{1,25}$/.test(String(raw.i || "")) ? String(raw.i) : null;
+      const h = X7.cleanHandle(raw.h);
+      if (!h) continue;                                  // profile mode needs the handle
+      const k = i || h.toLowerCase();
+      if (seen.has(k) || (i && following.has(i))) continue;
+      seen.add(k);
+      list.push({ i, h, n: String(raw.n || "").slice(0, 80), a: twimg(raw.a) });
+      if (list.length >= 5000) break;
+    }
   }
   return list.map((u) => ({ i: u.i || null, h: u.h, n: u.n || "", a: u.a || "" }));
 }
 
+function doneMessage(job) {
+  return job.kind === "follow"
+    ? TN(job.done, "Finished. Followed {n} account.", "Finished. Followed {n} accounts.")
+    : TN(job.done, "Finished. Unfollowed {n} account.", "Finished. Unfollowed {n} accounts.");
+}
+
 async function startJob(opts) {
   const source = opts.source;
-  const scan = await load(K.scan, null);
-  if (scan && scan.status === "running") return { ok: false, error: "Wait for the scan to finish." };
+  const kind = FOLLOW_SOURCES.has(source) ? "follow" : "unfollow";
+  const scan0 = await load(K.scan, null);
+  if (scan0 && scan0.status === "running") return { ok: false, error: T("Wait for the scan to finish.") };
   const cur = await load(K.job, null);
-  if (cur && ACTIVE_JOB.has(cur.status)) return { ok: false, error: "A run is already in progress." };
+  if (cur && ACTIVE_JOB.has(cur.status)) return { ok: false, error: T("A run is already in progress.") };
 
-  // Make sure we act as the account the scan belongs to.
+  // Make sure we act as the account the data belongs to.
   const got = await acquireTab(opts.keepTabId != null ? opts.keepTabId : null, { create: true });
-  if (!got) return { ok: false, error: "Couldn't open X. Check that x.com loads in this browser." };
+  if (!got) return { ok: false, error: T("Couldn't open X. Check that x.com loads in this browser.") };
   const p = await ping(got.tabId);
   const uid = p && p.uid;
-  if (!uid) return { ok: false, error: "You're not signed in to X. Sign in at x.com first.", needLogin: true };
-  if (source !== "handles" && scan && scan.ownerId && scan.ownerId !== uid) {
-    return { ok: false, error: "Your scan is for a different X account. Scan again first." };
+  if (!uid) {
+    if (got.created) await closeOwnTab(got.tabId);
+    return { ok: false, error: T("You're not signed in to X. Sign in at x.com first."), needLogin: true };
+  }
+  const pr = await useProfile(uid);
+  if (!pr.ok) { if (got.created) await closeOwnTab(got.tabId); return { ok: false, error: await busyMessage(pr) }; }
+  const scan = await load(K.scan, null);
+  if (kind === "unfollow" && source !== "handles" && (!scan || (scan.ownerId && scan.ownerId !== uid))) {
+    if (got.created) await closeOwnTab(got.tabId);
+    return { ok: false, error: scan ? T("Your scan is for a different X account. Scan again first.") : T("Scan your following list first.") };
   }
 
   const queue = await buildTargets(source, opts);
   if (!queue.length) {
     if (got.created) await closeOwnTab(got.tabId);
-    return { ok: false, error: source === "nonfollowers"
-      ? "Everyone left either follows you back or is protected by your Keep rules."
-      : "Nothing to unfollow." };
+    return { ok: false, error: kind === "follow"
+      ? T("Nothing to follow - you already follow everyone you picked.")
+      : source === "nonfollowers"
+        ? T("Everyone left either follows you back or is protected by your Keep rules.")
+        : T("Nothing to unfollow.") };
   }
 
   const job = {
-    id: Date.now().toString(36), status: "running", source, ownerId: uid,
+    id: Date.now().toString(36), status: "running", kind, source, ownerId: uid,
     total: queue.length, index: 0, done: 0, skipped: 0, failed: 0,
     startedAt: Date.now(), nextAt: Date.now(), sinceRest: 0,
     executor: "api", tabId: got.tabId, ownTab: !!(got.created || opts.ownTab), workerTabId: null,
     consecutiveFails: 0, targetFails: 0, rateHits: 0, tabWaits: 0,
-    current: null, inFlight: null, message: "Starting...", log: []
+    current: null, inFlight: null, message: T("Starting..."), log: []
   };
   await save({ [K.queue]: queue, [K.job]: job });
   keepAlive(true);
@@ -992,15 +1548,22 @@ async function finishJob(job, status, message) {
   job.current = null;
   job.inFlight = null;
   await save({ [K.job]: job });
-  keepAlive(false);
+  const fol = await load(K.fol, null);
+  const folOn = !!(fol && fol.status === "running");
+  if (!folOn) keepAlive(false);
   if (job.workerTabId != null) { try { await chrome.tabs.remove(job.workerTabId); } catch (_) {} job.workerTabId = null; }
-  if (job.ownTab && job.tabId != null) { try { await chrome.tabs.remove(job.tabId); } catch (_) {} }
+  if (job.ownTab && job.tabId != null) {
+    // A followers check still reading in this tab takes it over.
+    if (folOn && fol.tabId === job.tabId) { fol.ownTab = true; await save({ [K.fol]: fol }); }
+    else { try { await chrome.tabs.remove(job.tabId); } catch (_) {} }
+  }
   job.tabId = null;
   job.ownTab = false;
   await save({ [K.job]: job });
+  if (status === "done") notify("x7-done", T("All done"), message, "overview");
 }
 
-async function profileExec(job, t) {
+async function profileExec(job, t, isFollow) {
   if (!t.h) return { ok: false, kind: "transient", message: "no handle" };
   const url = "https://x.com/" + encodeURIComponent(t.h);
   const match = (u) => {
@@ -1022,7 +1585,7 @@ async function profileExec(job, t) {
     return { ok: false, kind: "transient", message: "the profile page didn't load" };
   }
   await sleep(rand(900, 1600));
-  return sendTab(wt, { x7: "profileUnfollow", id: t.i, h: t.h }, 50000);
+  return sendTab(wt, { x7: isFollow ? "profileFollow" : "profileUnfollow", id: t.i, h: t.h }, 50000);
 }
 
 // Save the run's progress without undoing a Pause/Stop the user pressed while
@@ -1043,6 +1606,10 @@ async function commitJob(job) {
   return true;
 }
 
+function haltNotify(job) {
+  notify("x7-halt", T("X Mass Unfollow needs you"), job.message || T("Needs your attention"), "overview");
+}
+
 async function jobStep(job) {
   const now = Date.now();
   if (job.status === "resting") {
@@ -1050,11 +1617,28 @@ async function jobStep(job) {
     job.status = "running";
     job.restReason = null;
     job.restUntil = null;
-    job.message = "Back to work.";
+    job.message = T("Back to work.");
   }
   if (job.nextAt && now < job.nextAt) { scheduleTick(job.nextAt - now); return; }
 
   const settings = await getSettings();
+  const isFollow = job.kind === "follow";
+
+  // Next target, skipping anyone whitelisted or already handled since queuing.
+  // This comes before the daily cap and breaks: a run whose only leftovers are
+  // skips finishes now instead of resting first.
+  const queue = await load(K.queue, []);
+  const wl = await getWhitelist();
+  const done = await getDoneIds();
+  const following = isFollow ? await followingIds() : null;
+  while (job.index < queue.length) {
+    const t = queue[job.index];
+    if (!isFollow && wl.has(String(t.h).toLowerCase())) { job.skipped++; job.index++; logLine(job, t.h, "skip", T("on your whitelist")); continue; }
+    if (!isFollow && t.i && done.has(t.i)) { job.skipped++; job.index++; continue; }
+    if (isFollow && t.i && following.has(t.i)) { job.skipped++; job.index++; logLine(job, t.h, "skip", T("already following")); continue; }
+    break;
+  }
+  if (job.index >= queue.length) return finishJob(job, "done", doneMessage(job));
 
   // Daily cap (rolling 24h). Rest until a slot frees, then carry on.
   const ledger = await getLedger();
@@ -1063,8 +1647,9 @@ async function jobStep(job) {
     job.status = "resting";
     job.restReason = "daily";
     job.restUntil = Math.max(freeAt, now + 60000);
-    job.message = `Daily limit of ${settings.dailyLimit} reached. Continues automatically at ${clock(job.restUntil)}.`;
-    await save({ [K.job]: job });
+    job.message = T("Daily limit of {n} reached. Continues automatically at {time}.", { n: settings.dailyLimit.toLocaleString(loc()), time: clock(job.restUntil) });
+    if (!await commitJob(job) || !ACTIVE_JOB.has(job.status)) return;
+    notify("x7-daily", T("Daily limit reached"), job.message, "overview");
     scheduleTick(job.restUntil - now);
     return;
   }
@@ -1076,25 +1661,14 @@ async function jobStep(job) {
     job.restReason = "cooldown";
     job.restUntil = now + mins * 60000;
     job.sinceRest = 0;
-    job.message = `Short break after ${settings.restEvery} unfollows. Back at ${clock(job.restUntil)}.`;
-    await save({ [K.job]: job });
+    job.message = isFollow
+      ? T("Short break after {n} follows. Back at {time}.", { n: settings.restEvery, time: clock(job.restUntil) })
+      : T("Short break after {n} unfollows. Back at {time}.", { n: settings.restEvery, time: clock(job.restUntil) });
+    if (!await commitJob(job) || !ACTIVE_JOB.has(job.status)) return;
     scheduleTick(job.restUntil - now);
     return;
   }
 
-  // Next target, skipping anyone whitelisted or already done since queuing.
-  const queue = await load(K.queue, []);
-  const wl = await getWhitelist();
-  const done = await getDoneIds();
-  while (job.index < queue.length) {
-    const t = queue[job.index];
-    if (wl.has(String(t.h).toLowerCase())) { job.skipped++; job.index++; logLine(job, t.h, "skip", "on your whitelist"); continue; }
-    if (t.i && done.has(t.i)) { job.skipped++; job.index++; continue; }
-    break;
-  }
-  if (job.index >= queue.length) {
-    return finishJob(job, "done", `Finished. Unfollowed ${job.done.toLocaleString()} account${job.done === 1 ? "" : "s"}.`);
-  }
   const t = queue[job.index];
   job.current = t;
 
@@ -1104,13 +1678,13 @@ async function jobStep(job) {
     if (job.tabWaits > 12) {
       job.status = "halted";
       job.haltKind = "tab";
-      job.message = "Couldn't reach x.com. Open x.com, then press Resume.";
-      await save({ [K.job]: job });
+      job.message = T("Couldn't reach x.com. Open x.com, then press Resume.");
+      if (await commitJob(job) && job.status === "halted") haltNotify(job);
       return;
     }
-    job.message = "Waiting for an X tab...";
+    job.message = T("Waiting for an X tab...");
     job.nextAt = now + 15000;
-    await save({ [K.job]: job });
+    if (!await commitJob(job) || !ACTIVE_JOB.has(job.status)) return;
     scheduleTick(15000);
     return;
   }
@@ -1118,20 +1692,20 @@ async function jobStep(job) {
   if (got.tabId !== job.tabId) { job.tabId = got.tabId; job.ownTab = got.created; }
 
   job.inFlight = { i: t.i, h: t.h, at: Date.now() };
-  job.message = `Unfollowing @${t.h}...`;
+  job.message = isFollow ? T("Following @{h}...", { h: t.h }) : T("Unfollowing @{h}...", { h: t.h });
   if (!await commitJob(job) || !ACTIVE_JOB.has(job.status)) return;
 
   let r = null;
   if (job.executor === "api") {
-    r = await sendTab(job.tabId, { x7: "unfollow", id: t.i, h: t.h }, 45000);
+    r = await sendTab(job.tabId, { x7: isFollow ? "follow" : "unfollow", id: t.i, h: t.h }, 45000);
     if (r && !r.ok && r.kind === "endpoint") {
-      console.warn("[x7] direct unfollow rejected, switching to profile mode:", r.message);
+      console.warn("[x7] direct request rejected, switching to profile mode:", r.message);
       job.executor = "profile";
-      await save({ [K.health]: { at: Date.now(), note: "Direct unfollow rejected by X (" + (r.status || "?") + "). Using profile mode." } });
+      await save({ [K.health]: { at: Date.now(), note: "Direct " + (isFollow ? "follow" : "unfollow") + " rejected by X (" + (r.status || "?") + "). Using profile mode." } });
     }
   }
   if (job.executor === "profile" && (!r || (!r.ok && r.kind === "endpoint"))) {
-    r = await profileExec(job, t);
+    r = await profileExec(job, t, isFollow);
     if (r && !r.ok && r.kind === "endpoint") r.kind = "transient";
   }
 
@@ -1141,12 +1715,20 @@ async function jobStep(job) {
   if (r.uid && job.ownerId && r.uid !== job.ownerId) {
     job.status = "halted";
     job.haltKind = "account";
-    job.message = "You switched to a different X account. Switch back, then press Resume.";
+    job.message = T("You switched to a different X account. Switch back, then press Resume.");
     await commitJob(job);
+    haltNotify(job);
     return;
   }
 
-  if (r.ok) {
+  if (r.ok && r.already) {                 // the profile page showed you already follow them
+    job.skipped++;
+    job.index++;
+    job.targetFails = 0;
+    logLine(job, t.h, "skip", T("already following"));
+    job.nextAt = Date.now() + rand(1500, 3500);
+  } else if (r.ok) {
+    const id = t.i || r.id || null;
     job.done++;
     job.index++;
     job.sinceRest++;
@@ -1154,21 +1736,28 @@ async function jobStep(job) {
     job.targetFails = 0;
     job.rateHits = 0;
     await pushLedger();
-    await pushHistory({ ...t, i: t.i || r.id || null }, job.source);
-    await addDone(t.i || r.id);
-    logLine(job, t.h, "ok", "unfollowed");
+    await pushHistory({ ...t, i: id }, job.source, isFollow ? "f" : "u");
+    if (isFollow) {
+      await removeDone(id);
+      await markFirstSeen(id);
+      logLine(job, t.h, "ok", r.requested ? T("follow request sent") : T("followed"));
+      job.message = r.requested ? T("Follow request sent to @{h}", { h: t.h }) : T("Followed @{h}", { h: t.h });
+    } else {
+      await addDone(id);
+      logLine(job, t.h, "ok", T("unfollowed"));
+      job.message = T("Unfollowed @{h}", { h: t.h });
+    }
     let delay = rand(settings.minDelay, settings.maxDelay);
     if (Math.random() < 0.08) delay *= rand(1.8, 3);            // an occasional longer pause
     job.nextAt = Date.now() + delay * 1000;
-    job.message = `Unfollowed @${t.h}`;
   } else if (r.kind === "gone") {
     job.skipped++;
     job.index++;
     job.targetFails = 0;
-    if (t.i) await addDone(t.i);
-    logLine(job, t.h, "skip", r.message || "not following / unavailable");
+    if (t.i && !isFollow) await addDone(t.i);
+    logLine(job, t.h, "skip", r.message ? T(r.message) : (isFollow ? T("unavailable") : T("not following / unavailable")));
     job.nextAt = Date.now() + rand(1500, 3500);
-    job.message = `@${t.h} skipped - ${r.message || "already gone"}`;
+    job.message = T("@{h} skipped - {why}", { h: t.h, why: r.message ? T(r.message) : T("already gone") });
   } else if (r.kind === "rate") {
     job.rateHits++;
     let ms = Math.max(r.waitMs || 15 * 60000, 5 * 60000);
@@ -1177,16 +1766,16 @@ async function jobStep(job) {
     job.status = "resting";
     job.restReason = "rate";
     job.restUntil = Date.now() + ms;
-    job.message = `X asked to slow down. Resting until ${clock(job.restUntil)}, then continuing automatically.`;
-    logLine(job, t.h, "wait", "X rate limit");
+    job.message = T("X asked to slow down. Resting until {time}, then continuing automatically.", { time: clock(job.restUntil) });
+    logLine(job, t.h, "wait", T("X rate limit"));
   } else if (r.kind === "auth" || r.kind === "locked" || r.kind === "suspended" || r.kind === "challenge") {
     job.status = "halted";
     job.haltKind = r.kind;
     job.message = r.kind === "auth"
-      ? "You're signed out of X. Sign in, then press Resume."
+      ? T("You're signed out of X. Sign in, then press Resume.")
       : r.kind === "locked"
-        ? "X is asking you to verify your account. Open x.com, complete X's check, wait a while, then press Resume."
-        : "X has restricted this account. Stop and check x.com.";
+        ? T("X is asking you to verify your account. Open x.com, complete X's check, wait a while, then press Resume.")
+        : T("X has restricted this account. Stop and check x.com.");
     logLine(job, t.h, "fail", r.kind);
   } else {
     job.consecutiveFails++;
@@ -1196,20 +1785,22 @@ async function jobStep(job) {
       job.failed++;
       job.index++;
       job.targetFails = 0;
-      logLine(job, t.h, "fail", r.message || "failed");
+      logLine(job, t.h, "fail", r.message ? T(r.message) : T("failed"));
     }
     if (job.consecutiveFails >= 24) {
       job.status = "halted";
       job.haltKind = "errors";
-      job.message = "X keeps failing to respond. Check x.com in a tab, then press Resume.";
+      job.message = T("X keeps failing to respond. Check x.com in a tab, then press Resume.");
     } else if (job.consecutiveFails % 8 === 0) {
       job.status = "resting";
       job.restReason = "errors";
       job.restUntil = Date.now() + 10 * 60000;
-      job.message = `X is having trouble. Retrying at ${clock(job.restUntil)}.`;
+      job.message = T("X is having trouble. Retrying at {time}.", { time: clock(job.restUntil) });
     } else {
       job.nextAt = Date.now() + Math.min(60000, 4000 * Math.pow(1.7, job.consecutiveFails - 1));
-      job.message = `Couldn't unfollow @${t.h} (${r.message || "error"}). Retrying...`;
+      job.message = isFollow
+        ? T("Couldn't follow @{h} ({why}). Retrying...", { h: t.h, why: r.message ? T(r.message) : T("error") })
+        : T("Couldn't unfollow @{h} ({why}). Retrying...", { h: t.h, why: r.message ? T(r.message) : T("error") });
     }
   }
 
@@ -1219,10 +1810,11 @@ async function jobStep(job) {
   if (job.status === "running" && job.index >= queue.length) {
     const latest = await load(K.job, null);
     if (latest && latest.id === job.id && ACTIVE_JOB.has(latest.status)) {
-      return finishJob(job, "done", `Finished. Unfollowed ${job.done.toLocaleString()} account${job.done === 1 ? "" : "s"}.`);
+      return finishJob(job, "done", doneMessage(job));
     }
   }
   if (!await commitJob(job)) return;
+  if (job.status === "halted") haltNotify(job);
   if (ACTIVE_JOB.has(job.status)) {
     const wake = job.status === "resting" ? job.restUntil - Date.now() : job.nextAt - Date.now();
     scheduleTick(Math.max(0, wake));
@@ -1233,11 +1825,11 @@ async function jobStep(job) {
 
 async function controlJob(action) {
   const job = await load(K.job, null);
-  if (!job) return { ok: false, error: "Nothing is running." };
+  if (!job) return { ok: false, error: T("Nothing is running.") };
   if (action === "pause") {
     if (!ACTIVE_JOB.has(job.status)) return { ok: true };
     job.status = "paused";
-    job.message = "Paused.";
+    job.message = T("Paused.");
   } else if (action === "resume") {
     if (!["paused", "halted"].includes(job.status)) return { ok: true };
     job.status = "running";
@@ -1245,14 +1837,16 @@ async function controlJob(action) {
     job.nextAt = Date.now();
     job.consecutiveFails = 0;
     job.tabWaits = 0;
-    job.message = "Resuming...";
+    job.message = T("Resuming...");
     await save({ [K.job]: job });
     keepAlive(true);
     scheduleTick(200);
     return { ok: true };
   } else if (action === "stop") {
     if (["done", "stopped"].includes(job.status)) return { ok: true };
-    await finishJob(job, "stopped", `Stopped. Unfollowed ${job.done.toLocaleString()} account${job.done === 1 ? "" : "s"}.`);
+    await finishJob(job, "stopped", job.kind === "follow"
+      ? TN(job.done, "Stopped. Followed {n} account.", "Stopped. Followed {n} accounts.")
+      : TN(job.done, "Stopped. Unfollowed {n} account.", "Stopped. Unfollowed {n} accounts."));
     return { ok: true };
   }
   await save({ [K.job]: job });
@@ -1263,32 +1857,35 @@ async function controlJob(action) {
 // State for the UI
 // ===========================================================================
 async function uiState() {
-  const [account, scan, job, settings, ledger, health, actFull] = await Promise.all([
-    load(K.account, null), load(K.scan, null), load(K.job, null), getSettings(), getLedger(), load(K.health, null), load(K.act, null)
+  const [account, scan, job, settings, ledger, health, actFull, folFull, owner, profiles] = await Promise.all([
+    load(K.account, null), load(K.scan, null), load(K.job, null), getSettings(), getLedger(), load(K.health, null),
+    load(K.act, null), load(K.fol, null), load(K.owner, null), load(K.profiles, null)
   ]);
   const act = actFull ? Object.assign({}, actFull, { queue: undefined }) : null;
+  const fol = folFull ? Object.assign({}, folFull, { ck: undefined }) : null;
   let actionable = null, actionableAll = null;
   if (scan && scan.status === "done") {
     const users = await getScanUsers();
     const wl = await getWhitelist();
     const done = await getDoneIds();
+    const ctx = { firstSeen: (await load(K.firstSeen, null)) || {}, now: Date.now() };
     actionable = 0; actionableAll = 0;
     for (const u of users) {
-      if (done.has(u.i) || X7.keepReason(u, settings, wl)) continue;
+      if (done.has(u.i) || X7.keepReason(u, settings, wl, ctx)) continue;
       actionableAll++;
       if (u.fy === false) actionable++;
     }
   }
   return {
-    ok: true, account, scan, job, settings, health, act,
-    today: ledger.length, actionable, actionableAll,
+    ok: true, account, scan, job, settings, health, act, fol, owner, profiles: profiles || {},
+    today: ledger.length, actionable, actionableAll, followersAutoMax: FOLLOWERS_AUTO_MAX,
     version: chrome.runtime.getManifest().version
   };
 }
 
 async function runHealth() {
   const got = await acquireTab(null, { create: true });
-  if (!got) return { ok: false, error: "Couldn't open x.com." };
+  if (!got) return { ok: false, error: T("Couldn't open x.com.") };
   const r = await sendTab(got.tabId, { x7: "health" }, 120000);
   const out = { at: Date.now(), ...r };
   await save({ [K.health]: out });
@@ -1309,6 +1906,7 @@ async function emergencyStop() {
   await stopScan();
   await controlJob("stop");
   await stopAct();
+  await stopFol();
 }
 
 // ===========================================================================
@@ -1346,18 +1944,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "state": pingActive(); return uiState();
       case "scan": return startScan({ then: msg.then || null });
       case "scanStop": return stopScan();
-      case "run": return startJob({ source: msg.source, ids: msg.ids, handles: msg.handles });
+      case "run": return startJob({ source: msg.source, ids: msg.ids, handles: msg.handles, targets: msg.targets });
       case "pause": return controlJob("pause");
       case "resume": return controlJob("resume");
       case "stop": return controlJob("stop");
       case "clearJob": {
         const job = await load(K.job, null);
-        if (job && ACTIVE_JOB.has(job.status)) return { ok: false, error: "Stop the run first." };
+        if (job && ACTIVE_JOB.has(job.status)) return { ok: false, error: T("Stop the run first.") };
         await chrome.storage.local.remove([K.job, K.queue]);
         return { ok: true };
       }
       case "actStart": return startAct({ scope: msg.scope, retry: !!msg.retry });
       case "actStop": return stopAct();
+      case "folStart": return startFol({});
+      case "folStop": return stopFol();
+      case "profileDelete": return deleteProfile(String(msg.id || ""));
+      case "notifyHello":
+        return { ok: await notify("x7-hello", T("Notifications are on"), T("You'll hear from X Mass Unfollow when a run reaches the daily limit, finishes or needs you."), "settings") };
       case "health": return runHealth();
       case "syncTelemetry": X7Telemetry.syncUninstallUrl(); return { ok: true };
       case "refreshAccount": {
@@ -1431,6 +2034,7 @@ async function injectIntoOpenTabs() {
 
 chrome.runtime.onInstalled.addListener(async (details) => {
   await migrateFromV6();
+  await migrateProfiles();
   injectIntoOpenTabs();
   X7Telemetry.onInstall();
   setBadge("");
@@ -1448,7 +2052,7 @@ chrome.runtime.onStartup.addListener(async () => {
   const job = await load(K.job, null);
   if (job && ACTIVE_JOB.has(job.status)) {
     job.status = "paused";
-    job.message = "Paused because the browser restarted. Press Resume to continue.";
+    job.message = T("Paused because the browser restarted. Press Resume to continue.");
     job.tabId = null; job.workerTabId = null; job.ownTab = false;
     await save({ [K.job]: job });
   }
@@ -1460,13 +2064,21 @@ chrome.runtime.onStartup.addListener(async () => {
   const act = await load(K.act, null);
   if (act && act.status === "running") {
     act.status = "stopped"; act.queue = []; act.tabId = null; act.ownTab = false;
-    act.message = "Stopped because the browser restarted. What was read is kept.";
+    act.message = T("Stopped because the browser restarted. What was read is kept.");
     await save({ [K.act]: act });
+  }
+  const fol = await load(K.fol, null);
+  if (fol && fol.status === "running") {
+    await save({ [K.fol]: Object.assign(fol, { status: "stopped", tabId: null, ownTab: false, finishedAt: Date.now(),
+      message: T("Stopped because the browser restarted. Check again any time.") }) });
+    await chrome.storage.local.remove(K.folPartial).catch(() => {});
   }
   refreshBadge();
 });
 
 async function resumeOnWake() {
+  await syncLanguage();
+  await migrateProfiles();
   const job = await load(K.job, null);
   const scan = await load(K.scan, null);
   if (job && job.inFlight && Date.now() - job.inFlight.at > 120000) {
@@ -1474,13 +2086,16 @@ async function resumeOnWake() {
     await save({ [K.job]: job });
   }
   const act = await load(K.act, null);
-  if ((scan && scan.status === "running") || (job && ACTIVE_JOB.has(job.status)) || (act && act.status === "running")) {
+  const fol = await load(K.fol, null);
+  if ((scan && scan.status === "running") || (job && ACTIVE_JOB.has(job.status)) ||
+      (act && act.status === "running") || (fol && fol.status === "running")) {
     keepAlive(true);
     scheduleTick(1500);
   }
   refreshBadge();
 }
 
+wireNotifications();
 resumeOnWake();
 
 // Network sharing and ads were removed: drop what they may have left behind

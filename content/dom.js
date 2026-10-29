@@ -4,7 +4,8 @@
 // page exactly as a person would, so X's app sends its own requests:
 //
 //   profileUnfollow  - on x.com/<handle>, click Following -> Unfollow.
-//                      Used only if the API unfollow is rejected. A profile
+//   profileFollow    - on x.com/<handle>, click Follow.
+//                      Used only if the API request is rejected. A profile
 //                      page always has exactly one follow control for that
 //                      account, so this can never hit the wrong person.
 //   scanStep         - on x.com/<you>/following, read the rendered rows and
@@ -66,12 +67,14 @@
     if (id) {
       return {
         un: root.querySelector(`[data-testid="${esc(id)}-unfollow"]`),
-        fo: root.querySelector(`[data-testid="${esc(id)}-follow"]`)
+        fo: root.querySelector(`[data-testid="${esc(id)}-follow"]`),
+        pend: root.querySelector(`[data-testid="${esc(id)}-cancel"]`)
       };
     }
     return {
       un: [...root.querySelectorAll('[data-testid$="-unfollow"]')].find(notInList) || null,
-      fo: [...root.querySelectorAll('[data-testid$="-follow"]')].find(notInList) || null
+      fo: [...root.querySelectorAll('[data-testid$="-follow"]')].find(notInList) || null,
+      pend: [...root.querySelectorAll('[data-testid$="-cancel"]')].find(notInList) || null
     };
   }
 
@@ -150,6 +153,44 @@
     }
     await dismiss();
     return { ok: false, kind: toastKind() || "transient", waitMs: 20 * 60000, message: "X did not confirm the unfollow" };
+  }
+
+  // Follow from the profile page. A private account gets a follow request.
+  async function profileFollow(target) {
+    const h = String(target.h || "").replace(/^@/, "").toLowerCase();
+    const here = (location.pathname.split("/")[1] || "").toLowerCase();
+    if (!h || here !== h) return { ok: false, kind: "transient", message: "not on the profile yet" };
+
+    let id = target.id || null;
+    let btn = null;
+    const until = Date.now() + 22000;
+    while (Date.now() < until) {
+      const ch = challenge();
+      if (ch) return { ok: false, kind: ch === "captcha" ? "locked" : ch, message: "X is showing a " + ch + " screen" };
+      const b = profileButtons(id);
+      if (b.fo) { btn = b.fo; break; }
+      if (b.un) return { ok: true, kind: "ok", id, already: true };
+      if (b.pend) return { ok: false, kind: "gone", message: "follow request already sent" };
+      if (pageSaysGone()) return { ok: false, kind: "gone", message: "account unavailable" };
+      await wait(350);
+    }
+    if (!btn) return { ok: false, kind: "transient", message: "the profile did not finish loading" };
+
+    const m = (btn.getAttribute("data-testid") || "").match(/^(.+)-follow$/);
+    if (m) id = m[1];
+    await wait(300 + Math.random() * 500);
+    btn.click();
+
+    const verifyUntil = Date.now() + 9000;
+    while (Date.now() < verifyUntil) {
+      const b = profileButtons(id);
+      if (b.un) return { ok: true, kind: "ok", id };
+      if (b.pend) return { ok: true, kind: "ok", id, requested: true };
+      const t = toastKind();
+      if (t) return { ok: false, kind: "rate", waitMs: 20 * 60000, message: "X says to slow down" };
+      await wait(250);
+    }
+    return { ok: false, kind: toastKind() || "transient", waitMs: 20 * 60000, message: "X did not confirm the follow" };
   }
 
   // ---------------------------------------------------------------------
@@ -239,5 +280,5 @@
     try { window.scrollTo(0, 0); } catch (_) {}
   }
 
-  window.__X7_DOM = { challenge, profileUnfollow, scanStep, scanReset, isFollowingPage };
+  window.__X7_DOM = { challenge, profileUnfollow, profileFollow, scanStep, scanReset, isFollowingPage };
 })();

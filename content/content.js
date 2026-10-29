@@ -3,8 +3,8 @@
 // The x.com side of the extension is a thin executor. All scheduling, pacing
 // and state live in the background worker (background.js), which survives
 // tab switches, reloads and the popup closing. The worker asks this script to
-// do one small thing at a time - read one page of the list, unfollow one
-// account - and records the result.
+// do one small thing at a time - read one page of a list, follow or unfollow
+// one account - and records the result.
 //
 // This script never acts on its own initiative and never alters x.com's page.
 
@@ -53,8 +53,14 @@
       case "unfollow":
         return reply(() => API.unfollow({ id: msg.id, h: msg.h }), sendResponse);
 
+      case "follow":
+        return reply(() => API.follow({ id: msg.id, h: msg.h }), sendResponse);
+
       case "profileUnfollow":
         return reply(() => DOM.profileUnfollow({ id: msg.id, h: msg.h }), sendResponse);
+
+      case "profileFollow":
+        return reply(() => DOM.profileFollow({ id: msg.id, h: msg.h }), sendResponse);
 
       case "domScanStep":
         return reply(() => DOM.scanStep({ handle: msg.handle, settleMs: msg.settleMs }), sendResponse);

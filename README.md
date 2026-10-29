@@ -20,7 +20,15 @@ A product of **Unique Labs**. Developed by
 - **Safe pacing.** Safe / Balanced / Fast presets or custom numbers: random gaps, regular breaks, and a rolling 24-hour limit that continues automatically.
 - **Backs off by itself.** If X says to slow down, the run rests and continues. If X asks you to verify your account, it stops and waits for you.
 - **Works in the background.** Switch tabs, close the popup, minimise the window: the run keeps going.
-- **History.** Everyone it unfollowed, with CSV export.
+- **Who unfollowed me.** After each scan the extension reads your followers and compares them with the previous read: the **Followers** page lists everyone who unfollowed you (with the dates between the two checks), your new followers, and the people you don't follow back. A partial read from X is never compared, so nobody is listed by mistake. Accounts with more than 20,000 followers are checked when you press Check now.
+- **Follow back & undo.** Follow back new followers or anyone you don't follow back, and re-follow people you unfollowed by mistake from History. Follows use the same safe pacing and count towards the daily limit.
+- **History.** Everyone it unfollowed or followed, with CSV export.
+- **Grace period.** A Keep rule for accounts you followed in the last N days, so new follows have time to follow you back.
+- **More filters & saved groups.** Followers range, follow ratio, account age, bio keywords (contains / doesn't contain) and writing system. Save any selection as a named group and pick it again from the Group menu.
+- **Growth chart.** Following and followers over time (30 days, 90 days, all), from your scans.
+- **Desktop notifications** (optional): when a run reaches the daily limit, finishes or needs you, and when people unfollow you. Chrome asks for permission the first time you switch them on.
+- **Multiple X accounts.** Each X account keeps its own scan, whitelist, history, groups and daily count; sign in to X as another account and its data loads automatically (never in the middle of a run).
+- **7 languages.** English, Español, Português (Brasil), हिन्दी, Bahasa Indonesia, Türkçe and العربية (right-to-left). Follows the browser language or the choice in Settings.
 - **Light & dark mode.** Follows your system, or flip it with the sun/moon button.
 - **GrowX.** A link to GrowX (organic X growth) in the sidebar, overview and popup - the natural next step after a clean-up.
 - **Private.** Your following list, whitelist and history stay in your browser. Only anonymous usage stats (install/active/uninstall + country, no IP, no X account) are sent, and you can turn them off in Settings. See [PRIVACY_POLICY.md](PRIVACY_POLICY.md).
@@ -59,6 +67,10 @@ popup / dashboard  ──commands──▶  background.js (the engine)
 | `popup.*` | Toolbar popup |
 | `dashboard.*` | Full dashboard (also the Settings page) |
 | `shared/telemetry.js` | Anonymous usage signal (install/active/uninstall + country); off switch in Settings |
+| `shared/i18n.js` | Translations: language choice, plurals, right-to-left, translating the static HTML |
+| `shared/i18n/*.js` | One dictionary per language (the English text is the key) |
+| `_locales/` | Store name and description per language |
+| `tools/i18n-extract.mjs` | Lists every interface string (writes `tools/i18n-strings.json`; not shipped) |
 | `ui/` | Shared design system (light/dark tokens), theme loader, helpers, logo |
 | `ui/donate/` | Token logos and donation QR codes |
 | `design/` | Icon source + renderer, QR builder, store-graphics builder (not shipped) |
@@ -75,8 +87,24 @@ Zip the extension files without `tests/`, the docs, or git data:
 zip -r x-mass-unfollow-7.3.2.zip manifest.json background.js \
   popup.html popup.css popup.js dashboard.html dashboard.css dashboard.js \
   options.html options.js privacy.html icon16.png icon32.png icon48.png icon128.png \
-  content shared ui -x "*.DS_Store"
+  _locales content shared ui -x "*.DS_Store"
 ```
+
+## Translations
+
+Every interface string is English in the code and goes through `t()` / `tn()`
+(pages) or `T()` / `TN()` (worker); static HTML is translated on load. To add
+or change a string:
+
+```sh
+export PLAYWRIGHT=/path/to/node_modules/playwright
+node tests/i18n_check.mjs     # re-lists the strings, then checks every language
+```
+
+It fails on any string a language is missing, a lost `{placeholder}`, changed
+markup or a bad plural form. Add the translation to each `shared/i18n/<lang>.js`
+(plurals are objects keyed by `Intl.PluralRules` category: `one`, `few`,
+`many`, `other`...).
 
 ## Rebuilding the graphics
 

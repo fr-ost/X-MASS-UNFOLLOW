@@ -1,0 +1,18 @@
+{
+  "extName": {
+    "message": "X (Twitter) Mass Unfollow – Toplu Takipten Çıkma, Ücretsiz ve Sınırsız",
+    "description": "Extension name (Chrome Web Store, max 75 characters)"
+  },
+  "extDesc": {
+    "message": "Ücretsiz ve sınırsız X (Twitter) toplu takipten çıkma aracı. Takip listeni temizle, seni takip etmeyenleri kolayca takipten çık.",
+    "description": "Extension description (Chrome Web Store, max 132 characters)"
+  },
+  "actionTitle": {
+    "message": "X Mass Unfollow – Ücretsiz ve Sınırsız",
+    "description": "Tooltip of the toolbar button"
+  },
+  "cmdStop": {
+    "message": "Çalışan işlemi hemen durdur",
+    "description": "Keyboard shortcut description (Alt+Shift+S)"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "extName": {
+    "message": "X (Twitter) Mass Unfollow – Berhenti Mengikuti Massal, Gratis",
+    "description": "Extension name (Chrome Web Store, max 75 characters)"
+  },
+  "extDesc": {
+    "message": "Berhenti mengikuti massal di X (Twitter), gratis & tanpa batas. Rapikan daftar yang diikuti dan hapus yang tidak mengikuti balik.",
+    "description": "Extension description (Chrome Web Store, max 132 characters)"
+  },
+  "actionTitle": {
+    "message": "X Mass Unfollow – Gratis & Tanpa Batas",
+    "description": "Tooltip of the toolbar button"
+  },
+  "cmdStop": {
+    "message": "Hentikan proses yang sedang berjalan sekarang juga",
+    "description": "Keyboard shortcut description (Alt+Shift+S)"
+  }
+}

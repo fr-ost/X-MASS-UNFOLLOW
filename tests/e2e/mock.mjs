@@ -24,8 +24,8 @@ export function createMock(opts = {}) {
     owner: opts.owner || { id: "1000", handle: "tester", name: "Test Person" },
     users: [],
     following: new Set(),
-    log: { gql: [], gqlBad: [], destroy: [], ui: [], txOk: 0, txBad: [], shell: 0, bundles: 0, trk: [], trkEvents: [], trkBye: [], act: [] },
-    counters: { gql: 0, destroy: 0, act: 0 }
+    log: { gql: [], gqlBad: [], destroy: [], create: [], ui: [], uiFollow: [], txOk: 0, txBad: [], shell: 0, bundles: 0, trk: [], trkEvents: [], trkBye: [], act: [] },
+    counters: { gql: 0, destroy: 0, create: 0, act: 0 }
   };
 
   const N = opts.users ? 0 : (opts.n || 230);
@@ -42,8 +42,17 @@ export function createMock(opts = {}) {
     });
     M.following.add(id);
   }
+  // Fans: people who follow you that you don't follow back.
+  for (let i = 0; i < (opts.fans || 0); i++) {
+    M.users.push({
+      id: String(9000 + i), h: "fan_" + i, n: "Fan " + i, fy: true, v: i % 7 === 2, p: i % 11 === 4, d: false,
+      fc: 50 + i * 13, fr: 80 + i * 7, sc: 5 + i, ca: new Date(Date.UTC(2016 + (i % 8), i % 12, 3)).toUTCString(),
+      b: "I follow you, you don't follow me #" + i
+    });
+  }
   M.byId = new Map(M.users.map((u) => [u.id, u]));
   M.byHandle = new Map(M.users.map((u) => [u.h.toLowerCase(), u]));
+  M.followerCount = () => M.users.filter((u) => u.fy).length + (M.cfg.extraFollowerCount || 0);
 
   function verifyTx(method, p, tx) {
     if (!tx) return "missing";
@@ -168,7 +177,7 @@ export function createMock(opts = {}) {
     const state = {
       featureSwitch: { defaultConfig: Object.fromEntries(FOLLOWING_FEATURES.map((f) => [f, { value: f !== "verified_phone_label_enabled" }])) },
       session: { user_id: M.owner.id },
-      entities: { users: { entities: { [M.owner.id]: { id_str: M.owner.id, screen_name: M.owner.handle, name: M.owner.name, profile_image_url_https: "https://pbs.twimg.com/profile_images/1000/me_normal.jpg", followers_count: 321, friends_count: M.following.size } } } }
+      entities: { users: { entities: { [M.owner.id]: { id_str: M.owner.id, screen_name: M.owner.handle, name: M.owner.name, profile_image_url_https: "https://pbs.twimg.com/profile_images/1000/me_normal.jpg", followers_count: M.followerCount(), friends_count: M.following.size } } } }
     };
     const runtime = opts.oldRuntime
       ? `!function(){var x={20113:"ondemand.s",4100:"bundle.Foo"},y={4100:"aaaa1111",20113:"${A.hash}"};}()`
@@ -204,6 +213,7 @@ e.exports={queryId:"QutrCCC444",operationName:"UserTweetsAndReplies",operationTy
 let following=${following};const id="${u.id}";
 function render(){document.getElementById("ctl").innerHTML=following?'<button data-testid="'+id+'-unfollow">Following</button>':'<button data-testid="'+id+'-follow">Follow</button>';}
 setTimeout(render,500);
+document.addEventListener("click",async(e)=>{const b=e.target.closest("[data-testid]");if(!b||b.dataset.testid!==id+"-follow")return;await fetch("/__mock/ui-follow",{method:"POST",body:id});following=true;render();});
 document.addEventListener("click",async(e)=>{const b=e.target.closest("[data-testid]");if(!b)return;const t=b.dataset.testid;
 if(t===id+"-unfollow"){const d=document.createElement("div");d.setAttribute("role","dialog");d.innerHTML='<div data-testid="confirmationSheetDialog"><b>Unfollow @${u.h}?</b><button data-testid="confirmationSheetConfirm">Unfollow</button><button data-testid="confirmationSheetCancel">Cancel</button></div>';document.body.appendChild(d);}
 if(t==="confirmationSheetConfirm"){await fetch("/__mock/ui-unfollow",{method:"POST",body:id});following=false;b.closest('[role="dialog"]').remove();render();}
@@ -287,6 +297,12 @@ window.addEventListener("scroll",()=>{if(loading||shown>=cells.length)return;if(
       const isAct = op === "UserTweetsAndReplies";
       if (!isAct) M.counters.gql++;
       const rec = { method: req.method, op, t: Date.now() };
+      // Hold a request open (and optionally fail it), to stop a check while a request is in flight.
+      const hang = isAct ? M.cfg.actHang : op === "Followers" ? M.cfg.followersHang : 0;
+      if (hang) {
+        await new Promise((r) => setTimeout(r, hang.ms || 0));
+        if (hang.status) { res.writeHead(hang.status); return res.end(); }
+      }
       if (isAct && M.cfg.actDown) { M.log.gqlBad.push({ ...rec, why: "actDown" }); res.writeHead(404); return res.end(); }
       if ((op === "Following" && M.cfg.followingDown) || (op === "Followers" && M.cfg.followersDown)) { M.log.gqlBad.push({ ...rec, why: "down" }); res.writeHead(404); return res.end(); }
       if (M.cfg.requirePost && req.method !== "POST") { M.log.gqlBad.push({ ...rec, why: "method" }); res.writeHead(404); return res.end(); }
@@ -343,6 +359,32 @@ window.addEventListener("scroll",()=>{if(loading||shown>=cells.length)return;if(
       M.following.delete(u.id);
       M.log.destroy.push({ id: u.id, h: u.h, t: Date.now() });
       return send(res, 200, { id_str: u.id, screen_name: u.h, following: false });
+    }
+
+    if (p === "/i/api/1.1/friendships/create.json") {
+      M.counters.create++;
+      const form = new URLSearchParams(await body(req));
+      const txErr = verifyTx("POST", p, req.headers["x-client-transaction-id"]);
+      if (txErr) M.log.txBad.push({ p, why: txErr }); else M.log.txOk++;
+      if (M.cfg.createMode === "404") { res.writeHead(404); return res.end(); }
+      if (M.cfg.destroyRequireTxid && txErr) { res.writeHead(404); return res.end(); }
+      if (!authed(req)) return send(res, 401, { errors: [{ code: 32, message: "Could not authenticate you." }] });
+      if (M.cfg.create429At && M.counters.create === M.cfg.create429At) {
+        return send(res, 403, { errors: [{ code: 161, message: "You are unable to follow more people at this time." }] }, { "x-rate-limit-reset": String(Math.floor(Date.now() / 1000) + 2) });
+      }
+      const u = form.get("user_id") ? M.byId.get(form.get("user_id")) : M.byHandle.get(String(form.get("screen_name") || "").toLowerCase());
+      if (!u) return send(res, 404, { errors: [{ code: 108, message: "Cannot find specified user." }] });
+      if (u.blocksYou) return send(res, 403, { errors: [{ code: 162, message: "You have been blocked from following this account at the request of the user." }] });
+      M.following.add(u.id);
+      M.log.create.push({ id: u.id, h: u.h, t: Date.now() });
+      return send(res, 200, { id_str: u.id, screen_name: u.h, protected: !!u.p, following: !u.p, follow_request_sent: !!u.p });
+    }
+
+    if (p === "/__mock/ui-follow" && req.method === "POST") {
+      const id = (await body(req)).trim();
+      M.following.add(id);
+      M.log.uiFollow.push({ id, t: Date.now() });
+      return send(res, 200, { ok: true });
     }
 
     if (p === "/__mock/ui-unfollow" && req.method === "POST") {

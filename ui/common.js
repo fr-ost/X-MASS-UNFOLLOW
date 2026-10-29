@@ -4,6 +4,16 @@
 
   const U = {};
 
+  // Translation (shared/i18n.js). English is the fallback for anything missing.
+  const I = window.X7I18N || null;
+  U.t = (s, v) => (I ? I.t(s, v) : String(s).replace(/\{(\w+)\}/g, (m, k) => (v && v[k] != null ? v[k] : m)));
+  U.tn = (n, one, other, v) => (I ? I.tn(n, one, other, v) : U.t(Number(n) === 1 ? one : other, Object.assign({ n: Number(n).toLocaleString() }, v || {})));
+  U.lang = () => (I ? I.lang : "en");
+  // Numbers and dates follow the interface language (undefined = browser default).
+  U.locale = () => (I ? I.locale : undefined);
+  // "@handle", kept as one left-to-right piece inside right-to-left text.
+  U.at = (h) => (I && I.rtl ? "\u2066@" + h + "\u2069" : "@" + h);
+
   U.$ = (sel, root) => (root || document).querySelector(sel);
   U.$$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
 
@@ -27,39 +37,91 @@
   };
 
   U.esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  U.fmt = (n) => (n == null || Number.isNaN(Number(n))) ? "-" : Number(n).toLocaleString();
+  U.fmt = (n) => (n == null || Number.isNaN(Number(n))) ? "-" : Number(n).toLocaleString(U.locale());
+  let compactFmt = null;
   U.compact = (n) => {
     if (n == null) return "-";
     n = Number(n);
+    if (U.locale()) {   // other languages: their own "K"/"M" ("1,3 mil", "1.3 ألف")
+      if (!compactFmt || compactFmt.l !== U.locale()) {
+        try { compactFmt = { l: U.locale(), f: new Intl.NumberFormat(U.locale(), { notation: "compact", maximumFractionDigits: 1 }) }; }
+        catch (_) { compactFmt = { l: U.locale(), f: null }; }
+      }
+      if (compactFmt.f) return compactFmt.f.format(n);
+    }
     if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, "") + "M";
     if (n >= 1e4) return Math.round(n / 1e3) + "K";
     if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "K";
     return String(n);
   };
 
+  // "5 minutes ago" in the interface language (the browser formats it).
+  let rtf = null;
+  const relFmt = () => {
+    if (!rtf || rtf.lang !== U.lang()) {
+      try { rtf = { lang: U.lang(), f: new Intl.RelativeTimeFormat(U.locale() || U.lang(), { numeric: "auto" }) }; }
+      catch (_) { rtf = { lang: U.lang(), f: null }; }
+    }
+    return rtf.f;
+  };
   U.ago = (ts) => {
-    if (!ts) return "never";
+    if (!ts) return U.t("never");
     const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
-    if (s < 45) return "just now";
+    if (s < 45) return U.t("just now");
+    const f = relFmt();
     const m = Math.round(s / 60);
-    if (m < 60) return m + " min ago";
     const h = Math.round(m / 60);
-    if (h < 24) return h + " h ago";
     const d = Math.round(h / 24);
-    return d + (d === 1 ? " day ago" : " days ago");
+    if (!f) return m < 60 ? m + " min ago" : h < 24 ? h + " h ago" : d + (d === 1 ? " day ago" : " days ago");
+    if (m < 60) return f.format(-m, "minute");
+    if (h < 24) return f.format(-h, "hour");
+    return f.format(-d, "day");
   };
 
+  // Compact durations ("1h 05m"), with unit symbols in the interface language.
+  const unitFmt = {};
+  const unit = (n, u) => {
+    const k = U.lang() + u;
+    if (!unitFmt[k]) {
+      try { unitFmt[k] = new Intl.NumberFormat(U.locale() || U.lang(), { style: "unit", unit: u, unitDisplay: "narrow" }); }
+      catch (_) { unitFmt[k] = { format: (x) => x + u[0] }; }
+    }
+    return unitFmt[k].format(n);
+  };
   U.dur = (sec) => {
     sec = Math.max(0, Math.round(sec));
-    if (sec < 60) return sec + "s";
+    if (sec < 60) return unit(sec, "second");
     const m = Math.floor(sec / 60), s = sec % 60;
-    if (m < 60) return m + "m" + (s ? " " + String(s).padStart(2, "0") + "s" : "");
+    if (m < 60) return unit(m, "minute") + (s ? " " + unit(s, "second") : "");
     const h = Math.floor(m / 60);
-    return h + "h " + String(m % 60).padStart(2, "0") + "m";
+    if (h < 48) return unit(h, "hour") + (m % 60 ? " " + unit(m % 60, "minute") : "");
+    return unit(Math.floor(h / 24), "day") + (h % 24 ? " " + unit(h % 24, "hour") : "");
   };
 
-  U.clock = (ts) => new Date(ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  U.date = (ts) => new Date(ts).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
+  U.clock = (ts) => new Date(ts).toLocaleTimeString(U.locale(), { hour: "numeric", minute: "2-digit" });
+  U.date = (ts) => new Date(ts).toLocaleDateString(U.locale(), { year: "numeric", month: "short", day: "numeric" });
+
+  // The writing system most of a name + bio is written in (for the filter).
+  const SCRIPTS = [
+    ["arabic", /\p{Script=Arabic}/u], ["cyrillic", /\p{Script=Cyrillic}/u],
+    ["cjk", /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u],
+    ["devanagari", /\p{Script=Devanagari}/u], ["latin", /\p{Script=Latin}/u]
+  ];
+  U.scriptOf = (text) => {
+    const counts = {};
+    let letters = 0;
+    for (const ch of String(text || "")) {
+      if (!/\p{L}/u.test(ch)) continue;
+      letters++;
+      const hit = SCRIPTS.find(([, re]) => re.test(ch));
+      const k = hit ? hit[0] : "other";
+      counts[k] = (counts[k] || 0) + 1;
+    }
+    if (!letters) return null;
+    let best = null;
+    for (const [k, n] of Object.entries(counts)) if (!best || n > counts[best]) best = k;
+    return best;
+  };
 
   // Animate a number from its current value to `to` (fluent counters).
   U.countTo = (el, to, fmt) => {
@@ -322,10 +384,17 @@
     coffee: '<path d="M5 9h11v5.5A4.5 4.5 0 0 1 11.5 19h-2A4.5 4.5 0 0 1 5 14.5z"/><path d="M16 10.5h1.5a2.5 2.5 0 0 1 0 5H16"/><path d="M8 3.5c-.6.8-.6 1.7 0 2.5M11 3.5c-.6.8-.6 1.7 0 2.5"/>',
     share: '<circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="m8.2 10.8 7.6-4.1M8.2 13.2l7.6 4.1"/>',
     gift: '<rect x="4" y="9" width="16" height="11" rx="1.8"/><path d="M3 9h18M12 9v11M12 9c-1.5-3.5-5.5-4-5.5-1.5S10 9 12 9zM12 9c1.5-3.5 5.5-4 5.5-1.5S14 9 12 9z"/>',
-    rocket: '<path d="M12 15c-1-1-2.5-3.4-2-6.5C10.6 5 13 3 16.5 3c.3 3.5-1.6 6-5 7.5"/><path d="M9.5 12.5 7 15l2 2 2.5-2.5M6.5 17.5 4 20M9 14l-4-1 3-3"/><path d="M14 11l1 4-3 3"/>'
+    rocket: '<path d="M12 15c-1-1-2.5-3.4-2-6.5C10.6 5 13 3 16.5 3c.3 3.5-1.6 6-5 7.5"/><path d="M9.5 12.5 7 15l2 2 2.5-2.5M6.5 17.5 4 20M9 14l-4-1 3-3"/><path d="M14 11l1 4-3 3"/>',
+    userPlus: '<circle cx="10" cy="8" r="3.5"/><path d="M3.5 20c.8-3.5 3.4-5.5 6.5-5.5 1.4 0 2.7.4 3.8 1.1"/><path d="M18.5 13.5v6M15.5 16.5h6"/>',
+    userMinus: '<circle cx="10" cy="8" r="3.5"/><path d="M3.5 20c.8-3.5 3.4-5.5 6.5-5.5 1.4 0 2.7.4 3.8 1.1"/><path d="M15.5 16.5h6"/>',
+    bell: '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
+    bookmark: '<path d="M7 3.5h10a1 1 0 0 1 1 1V20l-6-3.8L6 20V4.5a1 1 0 0 1 1-1z"/>',
+    filter: '<path d="M4 5h16l-6.2 7.4v5.4l-3.6 2V12.4z"/>',
+    undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+    chart: '<path d="M4 19.5h16"/><path d="m5 15 4.5-5 4 3 5.5-6.5"/>'
   };
   U.icon = (name, cls) =>
-    `<svg class="ic ${cls || ""}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[name] || ""}</svg>`;
+    `<svg class="ic ic-${name} ${cls || ""}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[name] || ""}</svg>`;
 
   // Fill every [data-icon] placeholder.
   U.icons = (root) => U.$$("[data-icon]", root).forEach((el) => {

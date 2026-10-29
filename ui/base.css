@@ -136,6 +136,7 @@ a { color: var(--accent-text); text-decoration: none; }
 a:hover { text-decoration: underline; }
 [hidden] { display: none !important; }
 .num { font-variant-numeric: tabular-nums; }
+.sr-only { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 ::selection { background: var(--accent-soft-hover); }
 * { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 
@@ -222,12 +223,13 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
   pointer-events: none;
 }
 .switch span::after {
-  content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%;
+  content: ""; position: absolute; top: 3px; inset-inline-start: 3px; width: 18px; height: 18px; border-radius: 50%;
   background: #fff; box-shadow: 0 1px 3px rgba(16, 24, 40, .3);
   transition: transform .28s var(--ease-spring);
 }
 .switch input:checked + span { background: var(--accent); }
 .switch input:checked + span::after { transform: translateX(18px); }
+[dir="rtl"] .switch input:checked + span::after { transform: translateX(-18px); }
 .switch input:focus-visible + span { box-shadow: 0 0 0 4px var(--accent-ring); }
 
 /* ---------- segmented control ---------- */
@@ -280,7 +282,7 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 /* ---------- progress ---------- */
 .bar { position: relative; height: 8px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
 .bar > i {
-  position: absolute; inset: 0 auto 0 0; width: 0%;
+  position: absolute; inset-block: 0; inset-inline-start: 0; width: 0%;
   border-radius: inherit;
   background: var(--grad);
   transition: width .7s var(--ease);
@@ -348,4 +350,7 @@ a.dev-link { color: var(--accent-text); font-weight: 650; }
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
 }
 
-/* ---------- ad zone ---------- */
+
+
+/* Arrows and other icons that point along the reading direction flip for right-to-left text. */
+[dir="rtl"] .ic-chevron, [dir="rtl"] .ic-undo, [dir="rtl"] .ic-send { transform: scaleX(-1); }

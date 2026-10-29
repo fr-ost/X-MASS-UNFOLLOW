@@ -133,7 +133,7 @@ body { background: var(--surface); overflow: hidden; }
 /* run */
 .run-head { display: flex; align-items: baseline; justify-content: space-between; }
 .run-count b { font-size: 30px; letter-spacing: -.04em; line-height: 1; }
-.run-count span { font-size: 15px; color: var(--muted); margin-left: 4px; font-weight: 650; }
+.run-count span { font-size: 15px; color: var(--muted); margin-inline-start: 4px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .run-pct { font-size: 13px; color: var(--text-2); font-weight: 650; }
 
 .now {
@@ -145,7 +145,7 @@ body { background: var(--surface); overflow: hidden; }
 .now-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .now-text small { font-size: 10.5px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
 .now-text b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.now-timer { text-align: right; display: flex; flex-direction: column; }
+.now-timer { text-align: end; display: flex; flex-direction: column; }
 .now-timer b { font-size: 17px; }
 .now-timer small { font-size: 11px; color: var(--muted); }
 
@@ -229,9 +229,22 @@ body { background: var(--surface); overflow: hidden; }
 .rate-sheet p { font-size: 13.5px; }
 .rate-row { margin-top: 6px; }
 .rate-row .btn { font-size: 12.5px; color: var(--text-2); }
-.sheet-facts { display: grid; gap: 6px; margin-bottom: 14px; text-align: left; }
+.sheet-facts { display: grid; gap: 6px; margin-bottom: 14px; text-align: start; }
 .sheet-facts div {
   display: flex; justify-content: space-between; gap: 10px;
   font-size: 12.5px; padding: 8px 10px; border-radius: 10px; background: var(--surface-2);
 }
 .sheet-facts span { color: var(--text-2); }
+
+/* ---------- "people unfollowed you" line ---------- */
+.lost-line {
+  appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--text-2);
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border-radius: var(--radius);
+  font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; text-align: start;
+  transition: background .18s var(--ease), border-color .18s var(--ease);
+}
+.lost-line:hover { background: var(--hover); border-color: var(--border-strong); }
+.lost-line.is-hot { background: var(--danger-soft); border-color: transparent; color: var(--danger-text); }
+.lost-line .ic { width: 16px; height: 16px; flex: none; }
+.lost-line #lostText { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lost-go { display: flex; opacity: .7; }

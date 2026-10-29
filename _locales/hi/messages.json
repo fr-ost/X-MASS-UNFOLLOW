@@ -1,0 +1,18 @@
+{
+  "extName": {
+    "message": "X (Twitter) Mass Unfollow – मुफ़्त और असीमित मास अनफ़ॉलो टूल",
+    "description": "Extension name (Chrome Web Store, max 75 characters)"
+  },
+  "extDesc": {
+    "message": "मुफ़्त और असीमित X (Twitter) मास अनफ़ॉलो टूल। एक साथ अनफ़ॉलो करें, फ़ॉलोइंग सूची साफ़ करें और नॉन-फ़ॉलोअर्स को आसानी से हटाएँ।",
+    "description": "Extension description (Chrome Web Store, max 132 characters)"
+  },
+  "actionTitle": {
+    "message": "X Mass Unfollow – मुफ़्त और असीमित",
+    "description": "Tooltip of the toolbar button"
+  },
+  "cmdStop": {
+    "message": "चल रही अनफ़ॉलो प्रक्रिया तुरंत बंद करें",
+    "description": "Keyboard shortcut description (Alt+Shift+S)"
+  }
+}

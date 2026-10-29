@@ -1,0 +1,18 @@
+{
+  "extName": {
+    "message": "X (Twitter) Mass Unfollow Tool – Free & Unlimited",
+    "description": "Extension name (Chrome Web Store, max 75 characters)"
+  },
+  "extDesc": {
+    "message": "Free & unlimited X (Twitter) mass unfollow tool. Bulk unfollow, clean your following list, and remove non-followers with ease.",
+    "description": "Extension description (Chrome Web Store, max 132 characters)"
+  },
+  "actionTitle": {
+    "message": "X Mass Unfollow – Free & Unlimited",
+    "description": "Tooltip of the toolbar button"
+  },
+  "cmdStop": {
+    "message": "Stop the running unfollow session immediately",
+    "description": "Keyboard shortcut description (Alt+Shift+S)"
+  }
+}

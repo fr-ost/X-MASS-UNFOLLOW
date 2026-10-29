@@ -7,6 +7,7 @@
   <title>X Mass Unfollow - Free &amp; Unlimited</title>
   <link rel="icon" href="ui/logo.svg" type="image/svg+xml">
   <script src="ui/theme.js"></script>
+  <script src="shared/i18n.js"></script>
   <link rel="stylesheet" href="ui/base.css">
   <link rel="stylesheet" href="dashboard.css">
 </head>
@@ -24,6 +25,7 @@
       <nav class="nav" id="nav">
         <a href="#overview" data-route="overview" data-icon="home"><span>Overview</span></a>
         <a href="#following" data-route="following" data-icon="users"><span>Following</span><em id="navNon" hidden></em></a>
+        <a href="#followers" data-route="followers" data-icon="userMinus"><span>Followers</span><em id="navLost" hidden></em></a>
         <a href="#whitelist" data-route="whitelist" data-icon="shield"><span>Whitelist</span><em id="navWl" hidden></em></a>
         <a href="#history" data-route="history" data-icon="history"><span>History</span></a>
         <a href="#settings" data-route="settings" data-icon="sliders"><span>Settings</span></a>
@@ -68,11 +70,13 @@
           </div>
         </header>
 
+        <div class="notice-inline acct-note" id="acctNote" hidden></div>
+
         <div class="kpis">
           <div class="kpi card"><span>Following</span><b class="num" id="kFollowing">-</b><small id="kFollowingSub">from your last scan</small></div>
+          <a class="kpi card kpi-link" href="#followers"><span>Followers</span><b class="num" id="kFollowers">-</b><small id="kFollowersSub">&nbsp;</small></a>
           <div class="kpi card kpi-hot"><span>Don't follow back</span><b class="num" id="kNon">-</b><small id="kNonSub">&nbsp;</small></div>
-          <div class="kpi card"><span>Mutuals</span><b class="num" id="kMutual">-</b><small>follow each other</small></div>
-          <div class="kpi card"><span>Unfollowed today</span><b class="num" id="kToday">0</b><small id="kTodaySub">rolling 24 hours</small></div>
+          <div class="kpi card"><span>Actions today</span><b class="num" id="kToday">0</b><small id="kTodaySub">rolling 24 hours</small></div>
         </div>
 
         <div class="grid-2">
@@ -91,7 +95,7 @@
             </div>
 
             <div id="rpActive" hidden>
-              <div class="rp-count"><b class="num" id="rpDone">0</b><span class="num" id="rpTotal">/ 0 unfollowed</span><em class="num" id="rpPct">0%</em></div>
+              <div class="rp-count"><b class="num" id="rpDone">0</b><span class="num" id="rpTotal">/ 0</span><em class="num" id="rpPct">0%</em></div>
               <div class="bar is-live" id="rpBar"><i></i></div>
               <div class="rp-now">
                 <span class="avatar" id="rpAvatar"></span>
@@ -124,6 +128,27 @@
             <div class="panel-head"><h2>Activity</h2><a href="#history" class="small-link">All history</a></div>
             <ul class="feed" id="feed"></ul>
             <div class="empty-mini" id="feedEmpty">Nothing yet. Your unfollows will show up here.</div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card panel chart-card">
+            <div class="panel-head">
+              <h2>Your account over time</h2>
+              <div class="segmented seg-sm" id="chartRange">
+                <button data-r="30">30 days</button>
+                <button data-r="90" class="is-on">90 days</button>
+                <button data-r="all">All</button>
+              </div>
+            </div>
+            <div class="chart-stats" id="chartStats"></div>
+            <div class="chart" id="chart" role="img" aria-label="Following and followers over time"></div>
+            <div class="empty-mini" id="chartEmpty" hidden>Scan a few times (for example once a week) and your following and followers will be charted here.</div>
+          </div>
+          <div class="card panel">
+            <div class="panel-head"><h2>Unfollowed you recently</h2><a href="#followers" class="small-link">See all</a></div>
+            <ul class="feed" id="lostFeed"></ul>
+            <div class="empty-mini" id="lostEmpty">Nobody yet. After your next scan, anyone who unfollows you shows up here.</div>
           </div>
         </div>
 
@@ -213,6 +238,11 @@
                 <button data-x="verified">Verified</button>
                 <button data-x="private">Private</button>
               </div>
+              <div class="tool-end">
+              <select class="select" id="flGroup" aria-label="Group">
+                <option value="">All accounts</option>
+              </select>
+              <button class="btn btn-sm" id="flFiltersBtn" data-icon="filter" type="button"><span>More filters</span><em id="flFiltersN" hidden></em></button>
               <select class="select" id="flSort" aria-label="Sort">
                 <option value="list">Newest follows first</option>
                 <option value="oldest">Oldest follows first</option>
@@ -226,6 +256,47 @@
                 <option value="desc">Most inactive first</option>
                 <option value="asc">Least inactive first</option>
               </select>
+              </div>
+            </div>
+
+            <div class="filters" id="flFilters" hidden>
+              <label><span>Followers at least</span><input class="input" type="number" min="0" id="fMinFc" placeholder="0"></label>
+              <label><span>Followers at most</span><input class="input" type="number" min="0" id="fMaxFc" placeholder="Any"></label>
+              <label><span>Follows ÷ followers at least</span><input class="input" type="number" min="0" step="0.5" id="fRatio" placeholder="e.g. 5"></label>
+              <label><span>Joined X</span>
+                <select class="select" id="fAge">
+                  <option value="">Any time</option>
+                  <option value="new30">In the last 30 days</option>
+                  <option value="new365">In the last year</option>
+                  <option value="old5">More than 5 years ago</option>
+                  <option value="old10">More than 10 years ago</option>
+                </select>
+              </label>
+              <label><span>Bio contains</span><input class="input" id="fBioIn" placeholder="crypto, giveaway" autocomplete="off"></label>
+              <label><span>Bio doesn't contain</span><input class="input" id="fBioOut" placeholder="design, music" autocomplete="off"></label>
+              <label><span>Writing system</span>
+                <select class="select" id="fScript">
+                  <option value="">Any</option>
+                  <option value="latin">Latin (English, Spanish...)</option>
+                  <option value="arabic">Arabic</option>
+                  <option value="cyrillic">Cyrillic</option>
+                  <option value="cjk">Chinese, Japanese, Korean</option>
+                  <option value="devanagari">Devanagari (Hindi...)</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <div class="filters-end"><button class="btn btn-ghost btn-sm" id="fClear" type="button"><span>Clear filters</span></button></div>
+            </div>
+
+            <div class="group-bar" id="flGroupBar" hidden>
+              <span data-icon="bookmark"></span>
+              <b id="flGroupName"></b>
+              <span class="muted" id="flGroupCount"></span>
+              <span class="bulk-sp"></span>
+              <button class="btn btn-sm" id="grpSelect" data-icon="check" type="button"><span>Select all</span></button>
+              <button class="btn btn-sm" id="grpKeep" data-icon="shield" type="button"><span>Keep all</span></button>
+              <button class="btn btn-sm" id="grpExport" data-icon="download" type="button"><span>Export</span></button>
+              <button class="btn btn-sm btn-danger-soft" id="grpDelete" data-icon="trash" type="button"><span>Delete group</span></button>
             </div>
           </div>
 
@@ -248,9 +319,75 @@
           <b id="bulkCount">0 selected</b>
           <button class="btn btn-ghost btn-sm" id="bulkClear"><span>Clear</span></button>
           <span class="bulk-sp"></span>
+          <button class="btn btn-sm" id="bulkGroup" data-icon="bookmark" title="Save the selection as a group" aria-label="Save as group"><span>Save group</span></button>
           <button class="btn btn-sm" id="bulkKeep" data-icon="shield" title="Keep selected (never unfollow)" aria-label="Keep selected"><span>Keep</span></button>
           <button class="btn btn-sm" id="bulkExport" data-icon="download" title="Export selected as CSV" aria-label="Export selected"><span>Export</span></button>
           <button class="btn btn-primary btn-sm" id="bulkRun" data-icon="userX"><span>Unfollow selected</span></button>
+        </div>
+      </section>
+
+      <!-- FOLLOWERS -->
+      <section class="page" data-page="followers">
+        <header class="page-head">
+          <div>
+            <h1>Followers</h1>
+            <p id="foSub">See who unfollowed you, who's new, and who you don't follow back.</p>
+          </div>
+          <div class="head-actions">
+            <button class="btn" id="foCheck" data-icon="refresh"><span>Check now</span></button>
+            <button class="btn" id="foExport" data-icon="download"><span>Export</span></button>
+          </div>
+        </header>
+
+        <div class="card panel fo-status" id="foStatus" hidden>
+          <div class="fo-status-top">
+            <span class="pill is-scan" id="foPill"><span class="dot"></span><span id="foPillText">Checking</span></span>
+            <span id="foMsg" class="muted"></span>
+            <button class="btn btn-sm btn-danger-soft" id="foStop" data-icon="stop" hidden><span>Stop</span></button>
+          </div>
+          <div class="bar is-scan is-live" id="foBar" hidden><i></i></div>
+        </div>
+
+        <div class="empty-state card" id="foEmpty" hidden>
+          <div class="es-icon" data-icon="userMinus"></div>
+          <h2 id="foEmptyTitle">Find out who unfollows you</h2>
+          <p id="foEmptyText">After a scan, the extension reads your followers. From the next scan on, everyone who unfollowed you since is listed here - plus your new followers and the people you don't follow back.</p>
+          <button class="btn btn-primary btn-lg" id="foEmptyGo" data-icon="scan"><span>Scan now</span></button>
+        </div>
+
+        <div id="foBody" hidden>
+          <div class="toolbar card">
+            <div class="search">
+              <span data-icon="search"></span>
+              <input class="input" id="foSearch" type="search" placeholder="Search name, @handle or bio" autocomplete="off">
+            </div>
+            <div class="seg seg-scroll" id="foSeg" role="tablist">
+              <button data-f="lost" class="is-on">Unfollowed you <em id="cLost">0</em></button>
+              <button data-f="gained">New followers <em id="cGained">0</em></button>
+              <button data-f="fans">You don't follow back <em id="cFans">0</em></button>
+            </div>
+            <p class="seg-note" id="foNote"></p>
+          </div>
+
+          <div class="table card fo-table" id="foTable">
+            <div class="thead">
+              <label class="cb"><input type="checkbox" id="foAll" aria-label="Select all"><span></span></label>
+              <span>Account</span>
+              <span class="col-num col-fc">Followers</span>
+              <span class="col-num col-when" id="foColWhen">Noticed</span>
+            </div>
+            <div class="tbody" id="foRows"></div>
+            <div class="sentinel" id="foMore"></div>
+            <div class="empty-mini" id="foNone" hidden>Nobody here.</div>
+          </div>
+        </div>
+
+        <div class="bulk" id="foBulk" hidden>
+          <b id="foBulkCount">0 selected</b>
+          <button class="btn btn-ghost btn-sm" id="foBulkClear"><span>Clear</span></button>
+          <span class="bulk-sp"></span>
+          <button class="btn btn-sm" id="foBulkExport" data-icon="download" title="Export selected as CSV" aria-label="Export selected"><span>Export</span></button>
+          <button class="btn btn-primary btn-sm" id="foBulkRun" data-icon="userPlus"><span id="foBulkRunLabel">Follow back</span></button>
         </div>
       </section>
 
@@ -287,7 +424,7 @@
         <header class="page-head">
           <div>
             <h1>History</h1>
-            <p id="hiSub">Everyone this extension unfollowed, newest first. Stored only on this computer.</p>
+            <p id="hiSub">Everyone this extension unfollowed or followed, newest first. Stored only on this computer.</p>
           </div>
           <div class="head-actions">
             <button class="btn" id="hiExport" data-icon="download"><span>Export CSV</span></button>
@@ -295,13 +432,27 @@
           </div>
         </header>
         <div class="card panel">
-          <div class="panel-head">
-            <h2><span id="hiCount">0</span> unfollowed</h2>
+          <div class="panel-head hi-head">
+            <div class="seg" id="hiSeg">
+              <button data-k="u" class="is-on">Unfollowed <em id="hiCountU">0</em></button>
+              <button data-k="f">Followed <em id="hiCountF">0</em></button>
+            </div>
             <input class="input input-sm" id="hiSearch" type="search" placeholder="Search" autocomplete="off">
+          </div>
+          <div class="hi-tools" id="hiTools">
+            <label class="cb"><input type="checkbox" id="hiAll" aria-label="Select all"><span></span></label>
+            <span class="muted" id="hiToolsText">Select accounts to follow them again.</span>
           </div>
           <div class="hi-list" id="hiList"></div>
           <div class="sentinel" id="hiMore"></div>
           <div class="empty-mini" id="hiEmpty">No unfollows yet.</div>
+        </div>
+
+        <div class="bulk" id="hiBulk" hidden>
+          <b id="hiBulkCount">0 selected</b>
+          <button class="btn btn-ghost btn-sm" id="hiBulkClear"><span>Clear</span></button>
+          <span class="bulk-sp"></span>
+          <button class="btn btn-primary btn-sm" id="hiBulkRun" data-icon="undo"><span>Follow again</span></button>
         </div>
       </section>
 
@@ -388,8 +539,30 @@
           </div>
           <div class="fields">
             <label><span>Keep accounts with at least <em>followers, 0 = off</em></span><input class="input" type="number" id="keepMinFollowers" min="0"></label>
-            <label class="span-2"><span>Keep if name, handle or bio contains <em>comma separated</em></span><input class="input" id="keepKeywords" placeholder="news, team, partner"></label>
+            <label><span>Keep accounts I followed in the last <em>days, 0 = off</em></span><input class="input" type="number" id="keepNewDays" min="0" max="365"></label>
+            <label><span>Keep if name, handle or bio contains <em>comma separated</em></span><input class="input" id="keepKeywords" placeholder="news, team, partner"></label>
           </div>
+          <p class="hint">"Followed in the last N days" gives new follows time to follow you back. It counts from the scan where an account first appears (and from the moment you follow someone with this extension).</p>
+        </div>
+
+        <div class="card panel">
+          <div class="panel-head"><h2>Followers &amp; notifications</h2></div>
+          <div class="toggles">
+            <label class="tog">
+              <span class="tog-text"><b>Track who unfollows me</b><small>After each scan, read your followers to see who unfollowed you, who's new and who you don't follow back. Read-only - it never follows or unfollows anyone.</small></span>
+              <span class="switch"><input type="checkbox" id="trackFollowers"><span></span></span>
+            </label>
+            <label class="tog">
+              <span class="tog-text"><b>Desktop notifications</b><small>A notification when a run reaches the daily limit, finishes or needs you, and when people unfollow you. Chrome asks for permission the first time.</small></span>
+              <span class="switch"><input type="checkbox" id="notifyToggle"><span></span></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="card panel">
+          <div class="panel-head"><h2>X accounts</h2></div>
+          <p class="muted">Each X account you use with this extension keeps its own scan, whitelist, history, groups and daily count. Sign in to X as another account and its data loads automatically.</p>
+          <div class="acct-list" id="acctList"></div>
         </div>
 
         <div class="card panel">
@@ -400,6 +573,18 @@
             <button data-pref="light" data-icon="sun"><span>Light</span></button>
             <button data-pref="dark" data-icon="moon"><span>Dark</span></button>
           </div>
+          <label class="lang-row"><span data-icon="globe"></span><span>Language</span>
+            <select class="select" id="langSel" aria-label="Language">
+              <option value="auto">Automatic (browser language)</option>
+              <option value="en">English</option>
+              <option value="es">Español</option>
+              <option value="pt">Português (Brasil)</option>
+              <option value="hi">हिन्दी</option>
+              <option value="id">Bahasa Indonesia</option>
+              <option value="tr">Türkçe</option>
+              <option value="ar">العربية</option>
+            </select>
+          </label>
         </div>
 
         <div class="card panel">
@@ -454,6 +639,9 @@
           <details><summary>Why did it stop at my daily limit?</summary><p>X restricts accounts that unfollow too many people in a day. When your daily limit is reached the run rests and continues on its own as the 24-hour window frees up. You can change the limit in Settings.</p></details>
           <details><summary>Someone who follows me was listed as a non-follower</summary><p>Run a fresh scan - follows change all the time. Add anyone you want to keep to the whitelist; whitelisted accounts are never unfollowed.</p></details>
           <details><summary>What does "profile mode" mean?</summary><p>If X ever rejects direct requests, the extension switches to opening each profile in a background tab and pressing Unfollow there, just like you would. It's slower but keeps working.</p></details>
+          <details><summary>How does "Who unfollowed me" work?</summary><p>After each scan the extension reads your followers list and compares it with the previous read. Anyone missing is listed under Followers &rarr; Unfollowed you, with the dates between the two checks. X hides suspended and deleted accounts, so they show up there too. If X returns an incomplete list, nothing is compared, so nobody is listed by mistake.</p></details>
+          <details><summary>I unfollowed someone by mistake</summary><p>Open History, select them and press Follow again. Follows use the same safe pacing and count towards your daily limit, like unfollows.</p></details>
+          <details><summary>I use more than one X account</summary><p>Each account keeps its own scan, whitelist, history and daily count. Switch accounts on X and the extension switches with you - except while a run for the other account is still going, so it never mixes them up.</p></details>
           <details><summary>Emergency stop</summary><p>Press <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> anywhere in Chrome to stop immediately.</p></details>
         </div>
 
@@ -607,6 +795,21 @@
       <div class="btn-row end">
         <button class="btn" id="cfCancel"><span>Cancel</span></button>
         <button class="btn btn-primary" id="cfOk"><span>Confirm</span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Save a selection as a group -->
+  <div class="modal-backdrop" id="groupAsk" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="groupAskTitle">
+      <div class="modal-icon is-info" data-icon="bookmark"></div>
+      <h2 id="groupAskTitle">Save as a group</h2>
+      <p id="groupAskText">Name this selection to find it again in the Group menu. Use an existing name to add to that group.</p>
+      <input class="input" id="groupName" list="groupNames" maxlength="40" placeholder="e.g. Crypto spam" autocomplete="off">
+      <datalist id="groupNames"></datalist>
+      <div class="btn-row end" style="margin-top:16px">
+        <button class="btn" id="groupCancel"><span>Cancel</span></button>
+        <button class="btn btn-primary" id="groupOk" data-icon="bookmark"><span>Save group</span></button>
       </div>
     </div>
   </div>

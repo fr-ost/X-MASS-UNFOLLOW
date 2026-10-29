@@ -6,6 +6,7 @@
   <meta name="description" content="Free and unlimited X (Twitter) mass unfollow tool: find who doesn't follow you back and bulk unfollow them safely.">
   <title>X Mass Unfollow - Free &amp; Unlimited</title>
   <script src="ui/theme.js"></script>
+  <script src="shared/i18n.js"></script>
   <link rel="stylesheet" href="ui/base.css">
   <link rel="stylesheet" href="popup.css">
 </head>
@@ -92,6 +93,7 @@
           <div class="stat"><b class="num" id="stMutual">0</b><span>Mutuals</span></div>
         </div>
         <div class="notice" id="readyNotice" hidden></div>
+        <button class="lost-line" id="lostLine" data-open="followers" hidden><span class="lost-ic" data-icon="userMinus"></span><span id="lostText"></span><span class="lost-go" data-icon="chevron"></span></button>
         <button class="btn btn-primary btn-lg btn-block" id="runNonBtn" data-icon="userX"><span id="runNonLabel">Unfollow non-followers</span></button>
         <div class="row2">
           <button class="btn btn-soft" id="reviewBtn" data-icon="users"><span>Review &amp; pick</span></button>
@@ -106,7 +108,7 @@
       <section class="view" data-view="run">
         <div class="run-head">
           <div class="run-count">
-            <b class="num" id="runDone">0</b><span class="num" id="runTotal">/ 0</span>
+            <b class="num" id="runDone">0</b><span id="runTotal">/ 0</span>
           </div>
           <span class="run-pct num" id="runPct">0%</span>
         </div>
@@ -147,7 +149,7 @@
           <p id="doneMsg">Your run finished.</p>
         </div>
         <div class="mini-stats">
-          <div><b class="num" id="doneUn">0</b><span>Unfollowed</span></div>
+          <div><b class="num" id="doneUn">0</b><span id="doneUnLabel">Unfollowed</span></div>
           <div><b class="num" id="doneSkip">0</b><span>Skipped</span></div>
           <div><b class="num" id="doneTime">-</b><span>Took</span></div>
         </div>

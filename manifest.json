@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "X (Twitter) Mass Unfollow Tool – Free & Unlimited",
+  "name": "__MSG_extName__",
   "short_name": "X Mass Unfollow",
   "version": "7.3.2",
-  "description": "Free & unlimited X (Twitter) mass unfollow tool. Bulk unfollow, clean your following list, and remove non-followers with ease.",
+  "description": "__MSG_extDesc__",
+  "default_locale": "en",
   "minimum_chrome_version": "116",
   "permissions": [
     "storage",
@@ -16,11 +17,14 @@
     "https://twitter.com/*",
     "https://abs.twimg.com/*"
   ],
+  "optional_permissions": [
+    "notifications"
+  ],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "X Mass Unfollow – Free & Unlimited",
+    "default_title": "__MSG_actionTitle__",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icon16.png",
@@ -55,7 +59,7 @@
       "suggested_key": {
         "default": "Alt+Shift+S"
       },
-      "description": "Stop the running unfollow session immediately"
+      "description": "__MSG_cmdStop__"
     }
   },
   "options_ui": {

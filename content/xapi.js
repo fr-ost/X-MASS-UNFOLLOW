@@ -4,8 +4,8 @@
 //
 //   * GraphQL "Following" / "Followers" timelines - to read the whole list
 //     page by page, with an authoritative "follows you" flag per account.
-//   * REST friendships/destroy.json - the request X's own Unfollow button
-//     sends.
+//   * REST friendships/destroy.json and friendships/create.json - the
+//     requests X's own Unfollow and Follow buttons send.
 //
 // Why not scroll the page and click buttons (what v6 did)?
 //   Chrome stops rendering a tab that is not visible, so X never loads more
@@ -132,6 +132,9 @@
     if (codes.some((c) => c === 34 || c === 50 || c === 63 || c === 108)) {
       return { kind: "gone", status, message: msg || "account not found" };
     }
+    // Follow only: a request is already pending, or that account blocked you.
+    if (codes.includes(160)) return { kind: "gone", status, message: "follow request already sent" };
+    if (codes.includes(162)) return { kind: "gone", status, message: "this account blocked you" };
     // Follow/unfollow volume limits come back as 403 with these codes.
     if (codes.some((c) => c === 161 || c === 344 || c === 327) || /limit/i.test(msg)) {
       return { kind: "rate", status, waitMs: rateWait(res, 30 * 60000), message: msg || "action limit" };
@@ -650,10 +653,13 @@
   }
 
   // ---------------------------------------------------------------------
-  // Unfollow
+  // Unfollow / follow
   // ---------------------------------------------------------------------
-  async function unfollow(target) {
-    const url = location.origin + "/i/api/1.1/friendships/destroy.json";
+  const unfollow = (target) => friendship("destroy", target);
+  const follow = (target) => friendship("create", target);
+
+  async function friendship(action, target) {
+    const url = location.origin + "/i/api/1.1/friendships/" + action + ".json";
     const p = new URLSearchParams({
       include_profile_interstitial_type: "1",
       include_blocking: "1",
@@ -680,9 +686,11 @@
       }
       if (r.res.ok) {
         // X returns the user object. A 200 without one is still a success:
-        // the server accepted the unfollow.
+        // the server accepted the request. Following a private account sends
+        // a follow request instead.
         const j = r.json || {};
-        return { ok: true, kind: "ok", id: j.id_str || target.id || null, h: j.screen_name || target.h || null };
+        const requested = action === "create" && !!(j.follow_request_sent || (j.protected && j.following === false));
+        return { ok: true, kind: "ok", id: j.id_str || target.id || null, h: j.screen_name || target.h || null, requested };
       }
       const cls = classify(r.res, r.json);
       if (cls.kind === "endpoint" && attempt === 0) {
@@ -692,7 +700,7 @@
       }
       return { ok: false, ...cls };
     }
-    return { ok: false, kind: "endpoint", message: "X rejected the unfollow request." };
+    return { ok: false, kind: "endpoint", message: "X rejected the " + (action === "create" ? "follow" : "unfollow") + " request." };
   }
 
   // ---------------------------------------------------------------------
@@ -786,7 +794,7 @@
   }
 
   window.__X7_API = {
-    uid, csrf, whoami, listPage, lastPost, unfollow, health, discover,
+    uid, csrf, whoami, listPage, lastPost, unfollow, follow, health, discover,
     _test: { parsePage, parseUser, findOp, extractInitialState, featureValuesFrom, classify, scanActivity }
   };
 })();

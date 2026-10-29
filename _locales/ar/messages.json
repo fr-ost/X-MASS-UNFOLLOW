@@ -1,0 +1,18 @@
+{
+  "extName": {
+    "message": "X (Twitter) Mass Unfollow – إلغاء المتابعة الجماعي مجانًا وبلا حدود",
+    "description": "Extension name (Chrome Web Store, max 75 characters)"
+  },
+  "extDesc": {
+    "message": "أداة مجانية وبلا حدود لإلغاء المتابعة الجماعية على X (Twitter). نظّف قائمة من تتابعهم وألغِ متابعة من لا يتابعونك بسهولة.",
+    "description": "Extension description (Chrome Web Store, max 132 characters)"
+  },
+  "actionTitle": {
+    "message": "X Mass Unfollow – مجانية وبلا حدود",
+    "description": "Tooltip of the toolbar button"
+  },
+  "cmdStop": {
+    "message": "إيقاف عملية إلغاء المتابعة الجارية فورًا",
+    "description": "Keyboard shortcut description (Alt+Shift+S)"
+  }
+}

@@ -172,6 +172,9 @@ await scenario("J no tab + old runtime", async (H) => {
   assert(r.ok, "scan started without any X tab open");
   const s = await H.waitFor(async () => { const s = await H.scan(); return s && s.status === "done" ? s : null; }, "scan", 60000);
   assert(s.total === 230, "scan complete");
+  // The followers check reads in the same tab, then closes it.
+  const f = await H.waitFor(async () => { const f = await H.store("x7.fol"); return f && f.status !== "running" ? f : null; }, "followers check", 60000);
+  assert(f.status === "done", "followers check finished in the tab the scan opened");
   await sleep(1500);
   assert(!H.ctx.pages().some((p) => p.url().startsWith("https://x.com/")), "background tab it opened was closed");
 }, { oldRuntime: true });
