@@ -135,7 +135,7 @@ try {
   await p.click("#rateLater");
   await sleep(300);
   r = await review();
-  assert(r.state === "later" && r.job.startsWith("big1:daily:") && r.asks === 1, "the daily-limit ask is remembered");
+  assert(r && r.state === "later" && String(r.job).startsWith("big1:daily:") && r.asks === 1, "the daily-limit ask is remembered " + JSON.stringify(r));
   await p.close();
   p = await popupFor(daily("big1", 0));
   assert(!(await sheetUp(p)), "same daily pause never asks twice");
