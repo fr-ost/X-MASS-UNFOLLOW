@@ -209,20 +209,23 @@
     if (D.S && D.S.job) maybeAskReview(D.S.job);
   }
 
-  // Review prompt when the daily limit pauses a run or a run finishes (see U.review)
+  // Review prompt when the daily limit pauses a run or a run finishes (see U.review).
+  // The moment is claimed only when this page can show the prompt right away -
+  // in front and with no other dialog open - so a tab in the background (or one
+  // still showing the welcome screen) never uses up the ask.
   let reviewAsked = null;
-  async function maybeAskReview(j) {
+  function maybeAskReview(j) {
     const key = U.review.moment(j);
     if (!key || reviewAsked === key) return;
     reviewAsked = key;
-    if (!(await U.review.due(j))) return;
-    await U.review.claim(j);
-    const show = () => {
-      if (!$("#confirm").hidden || !$("#welcome").hidden || !$("#groupAsk").hidden) return setTimeout(show, 1500);   // never on top of another dialog
+    const attempt = async () => {
+      if (U.review.moment(D.S && D.S.job) !== key) return;                    // that moment has passed
+      if (document.hidden || !$("#confirm").hidden || !$("#welcome").hidden || !$("#groupAsk").hidden) return setTimeout(attempt, 1500);
+      if (!(await U.review.take(j))) return;
       $("#rateAsk").hidden = false;
       setTimeout(() => $("#rateAskGo").focus(), 30);
     };
-    setTimeout(show, 900);
+    setTimeout(attempt, 900);
   }
 
   async function loadUsers() {

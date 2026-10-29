@@ -194,6 +194,18 @@
       const r = (await U.get(X7.K.review, null)) || {};
       await U.set({ [X7.K.review]: Object.assign(r, { job: U.review.moment(job), asks: (r.asks || 0) + 1, at: Date.now() }) });
     },
+    // "Due?" and "claim" as one step under a lock shared by every page of the
+    // extension, so the popup and the dashboard can't both ask about the same
+    // moment (each would otherwise see it unclaimed and count an ask).
+    async take(job) {
+      const step = async () => {
+        if (!(await U.review.due(job))) return false;
+        await U.review.claim(job);
+        return true;
+      };
+      try { if (navigator.locks) return await navigator.locks.request("x7.review", step); } catch (_) {}
+      return step();
+    },
     async answer(state) {
       const r = (await U.get(X7.K.review, null)) || {};
       await U.set({ [X7.K.review]: Object.assign(r, { state, at: Date.now() }) });

@@ -218,15 +218,15 @@
   // ------------------------------------------------------------------ review prompt
   // At the daily-limit pause or the end of a run (see U.review).
   let reviewAsked = null;
-  async function maybeAskReview(j) {
+  // The moment is claimed only when the prompt can be shown right away.
+  function maybeAskReview(j) {
     const key = U.review.moment(j);
     if (!key || reviewAsked === key) return;
     reviewAsked = key;
-    if (!(await U.review.due(j))) return;
-    await U.review.claim(j);
     const view = j.status === "done" ? "done" : "run";
-    setTimeout(() => {
+    setTimeout(async () => {
       if (!$(`[data-view="${view}"]`).classList.contains("is-on") || !$("#sheet").hidden) return;
+      if (!(await U.review.take(j))) return;
       $("#rateSheet").hidden = false;
       setTimeout(() => $("#rateGo").focus(), 50);
     }, 700);

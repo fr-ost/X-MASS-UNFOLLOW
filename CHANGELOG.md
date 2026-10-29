@@ -45,7 +45,15 @@
 - Fixed: a scan that failed to start could leave the X tab it opened behind.
 - Fixed: X's "follow request already sent" and "this account blocked you"
   answers are now shown as such instead of a generic error.
-- Fixed: plural wording ("1 new followers"), and the popup's run counter.
+- Fixed: the review prompt could be used up by a dashboard tab in the
+  background (for example the welcome tab) and then never shown, or be
+  shown in two places at once; it is now claimed only by the page that shows
+  it.
+- Fixed: Reset settings no longer turns anonymous stats back on (or
+  followers tracking / notifications off); stopping a followers or
+  last-active check while X is still answering no longer restarts it.
+- Fixed: plural wording ("1 new followers"), the popup's run counter, and
+  long translated button labels (they wrap instead of being cut off).
 
 ## v7.3.1 - Review prompt
 
