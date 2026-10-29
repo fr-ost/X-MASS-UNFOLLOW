@@ -1,7 +1,7 @@
-// Review prompt after a successful run.
-//   - shown once per finished run (popup or dashboard, never both)
-//   - not after a stopped run or a run that unfollowed nobody
-//   - "Maybe later" waits for a later run at least 3 days on; 3 asks at most
+// Review prompt: when the daily limit pauses a run, or when a run finishes.
+//   - shown once per moment (popup or dashboard, never both)
+//   - not after a stopped run, a run that unfollowed nobody, or a short break
+//   - after any ask ("Maybe later" or no answer): not again for 3 days; 3 asks at most
 //   - "Leave a review" opens the store's review page and never asks again;
 //     so does the "Rate it" card on the Donate page, and "Don't ask again"
 import { boot, log, assert, sleep, OUT } from "./harness.mjs";
@@ -15,10 +15,14 @@ const job = (id, o = {}) => ({
 });
 const review = () => H.store("x7.review");
 const sheetUp = (p) => p.$eval("#rateSheet", (e) => !e.hidden);
+const daily = (id, day, o = {}) => job(id, {
+  status: "resting", restReason: "daily", restUntil: Date.now() + 20 * 3600e3 + day * DAY, total: 1500, index: 400, done: 400, skipped: 0,
+  finishedAt: null, message: "Daily limit of 400 reached. Continues automatically at 9:41 AM.", ...o
+});
 async function popupFor(j) {
   await H.setStore({ "x7.job": j });
   const p = await H.popup();
-  await p.waitForSelector('[data-view="done"].is-on', { timeout: 10000 });
+  await p.waitForSelector(`[data-view="${j.status === "done" || j.status === "stopped" ? "done" : "run"}"].is-on`, { timeout: 10000 });
   await sleep(1300);
   return p;
 }
@@ -122,6 +126,53 @@ try {
   p = await popupFor(job("cap1"));
   assert(!(await sheetUp(p)), "stops after 3 asks");
   await p.close();
+
+  // ---- daily limit: big runs take days, so ask when the limit pauses one ----
+  await H.setStore({ "x7.review": null });
+  p = await popupFor(daily("big1", 0));
+  assert(await sheetUp(p), "asks when the daily limit pauses a run");
+  await p.screenshot({ path: OUT + "/rv3-daily.png" });
+  await p.click("#rateLater");
+  await sleep(300);
+  r = await review();
+  assert(r.state === "later" && r.job.startsWith("big1:daily:") && r.asks === 1, "the daily-limit ask is remembered");
+  await p.close();
+  p = await popupFor(daily("big1", 0));
+  assert(!(await sheetUp(p)), "same daily pause never asks twice");
+  await p.close();
+  p = await popupFor(daily("big1", 1));
+  assert(!(await sheetUp(p)), "the next day's limit, within 3 days, doesn't ask");
+  await p.close();
+  p = await popupFor(job("big1"));
+  assert(!(await sheetUp(p)), "the run finishing within 3 days doesn't ask");
+  await p.close();
+
+  await H.setStore({ "x7.review": { ...(await review()), at: Date.now() - 4 * DAY } });
+  p = await popupFor(daily("big1", 4));
+  assert(await sheetUp(p), "asks again at a daily limit 3+ days on");
+  await p.close();                                            // closed without an answer
+  r = await review();
+  assert(r.asks === 2, "an unanswered ask still counts");
+  p = await popupFor(daily("big1", 5));
+  assert(!(await sheetUp(p)), "an unanswered ask also waits 3 days (no daily nagging)");
+  await p.close();
+
+  await H.setStore({ "x7.review": null });
+  p = await popupFor(daily("big2", 0, { restReason: "cooldown" }));
+  assert(!(await sheetUp(p)), "no prompt on a short break");
+  await p.close();
+  p = await popupFor(daily("big2", 0, { done: 0 }));
+  assert(!(await sheetUp(p)), "no prompt at a daily limit with nothing unfollowed by this run");
+  await p.close();
+
+  // dashboard open at the daily limit
+  await d.goto(d.url().replace(/#.*$/, "#overview"));
+  await H.setStore({ "x7.job": daily("big3", 0) });
+  await d.reload();
+  await d.waitForSelector("#rateAsk:not([hidden])", { timeout: 8000 });
+  assert(true, "dashboard asks at the daily limit");
+  await d.click("#rateAskLater");
+  await H.setStore({ "x7.job": job("big3", { status: "stopped" }) });
 } catch (e) {
   failed = true;
   console.error(e);

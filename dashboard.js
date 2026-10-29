@@ -178,11 +178,12 @@
     if (D.S && D.S.job) maybeAskReview(D.S.job);
   }
 
-  // Review prompt after a successful run (once per run, shared with the popup)
+  // Review prompt when the daily limit pauses a run or a run finishes (see U.review)
   let reviewAsked = null;
   async function maybeAskReview(j) {
-    if (reviewAsked === j.id) return;
-    reviewAsked = j.id;
+    const key = U.review.moment(j);
+    if (!key || reviewAsked === key) return;
+    reviewAsked = key;
     if (!(await U.review.due(j))) return;
     await U.review.claim(j);
     const show = () => {

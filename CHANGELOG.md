@@ -1,5 +1,13 @@
 # X Mass Unfollow - Changelog
 
+## v7.3.2 - Review prompt at the daily limit
+
+- Big runs can take days, so the review prompt now also appears when the daily
+  limit pauses a run that has unfollowed people - not only when a run finishes.
+- After any ask ("Maybe later", or closed without an answer) it waits at least
+  3 days, so a long run doesn't ask every day. Still 3 asks at most, and never
+  again after "Leave a review" or "Don't ask again".
+
 ## v7.3.1 - Review prompt
 
 - After a run finishes successfully (at least one account unfollowed), a polite

@@ -100,27 +100,37 @@
     growx: "https://chromewebstore.google.com/detail/ofiancichfcakbdgekhcahflpoglfgbh"
   };
 
-  // Review prompt, shown after a run finishes successfully.
-  //   - once per run (the popup and the dashboard share this record)
+  // Review prompt. Asked at a good moment of a run that has unfollowed people:
+  // when the daily limit pauses it (big runs can take days) or when it finishes.
+  //   - once per moment (the popup and the dashboard share this record)
   //   - "Leave a review" (or the Donate page's "Rate it" card) or "Don't ask again": never again
-  //   - "Maybe later": asks after a later run, at least 3 days on; 3 asks at most
+  //   - otherwise ("Maybe later", or closed without an answer): not again for
+  //     3 days, so a long run doesn't ask every day; 3 asks at most
   // Chrome doesn't tell an extension whether a review was posted, so opening
   // the review page counts as reviewed.
   const REVIEW_GAP_MS = 3 * 864e5, REVIEW_MAX_ASKS = 3;
   U.review = {
     url: () => U.links.store + "/reviews",
+    // A key for the moment to ask about, or null when this isn't one.
+    moment(job) {
+      if (!job || !job.id || !(job.done > 0)) return null;
+      if (job.status === "done") return job.id;
+      if (job.status === "resting" && job.restReason === "daily") return job.id + ":daily:" + (job.restUntil || 0);
+      return null;
+    },
     async due(job) {
-      if (!job || job.status !== "done" || !(job.done > 0) || !job.id) return false;
+      const key = U.review.moment(job);
+      if (!key) return false;
       const r = (await U.get(X7.K.review, null)) || {};
       if (r.state === "rated" || r.state === "no") return false;
-      if (r.job === job.id || (r.asks || 0) >= REVIEW_MAX_ASKS) return false;
-      if (r.state === "later" && Date.now() - (r.at || 0) < REVIEW_GAP_MS) return false;
+      if (r.job === key || (r.asks || 0) >= REVIEW_MAX_ASKS) return false;
+      if ((r.asks || 0) > 0 && Date.now() - (r.at || 0) < REVIEW_GAP_MS) return false;
       return true;
     },
-    // Claim the prompt for this run before showing it, so only one page asks.
+    // Claim the moment before showing the prompt, so only one page asks.
     async claim(job) {
       const r = (await U.get(X7.K.review, null)) || {};
-      await U.set({ [X7.K.review]: Object.assign(r, { job: job.id, asks: (r.asks || 0) + 1, at: Date.now() }) });
+      await U.set({ [X7.K.review]: Object.assign(r, { job: U.review.moment(job), asks: (r.asks || 0) + 1, at: Date.now() }) });
     },
     async answer(state) {
       const r = (await U.get(X7.K.review, null)) || {};

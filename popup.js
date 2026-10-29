@@ -177,6 +177,7 @@
 
     // The background hint is least useful while a longer status message shows.
     $(".hint-line").hidden = !(j.status === "running" || j.status === "paused");
+    if (j.status === "resting" && j.restReason === "daily") maybeAskReview(j);
     $("#pauseBtn").hidden = !(j.status === "running" || j.status === "resting");
     $("#resumeBtn").hidden = !(j.status === "paused" || j.status === "halted");
     tickTimer();
@@ -195,14 +196,17 @@
   }
 
   // ------------------------------------------------------------------ review prompt
+  // At the daily-limit pause or the end of a run (see U.review).
   let reviewAsked = null;
   async function maybeAskReview(j) {
-    if (reviewAsked === j.id) return;
-    reviewAsked = j.id;
+    const key = U.review.moment(j);
+    if (!key || reviewAsked === key) return;
+    reviewAsked = key;
     if (!(await U.review.due(j))) return;
     await U.review.claim(j);
+    const view = j.status === "done" ? "done" : "run";
     setTimeout(() => {
-      if (!$('[data-view="done"]').classList.contains("is-on") || !$("#sheet").hidden) return;
+      if (!$(`[data-view="${view}"]`).classList.contains("is-on") || !$("#sheet").hidden) return;
       $("#rateSheet").hidden = false;
       setTimeout(() => $("#rateGo").focus(), 50);
     }, 700);
