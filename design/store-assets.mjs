@@ -3,12 +3,14 @@
 // 1) boots the extension against the mock x.com with fictional showcase data
 // 2) captures real popup / dashboard screens at 2x
 // 3) composes 5 screenshots (1280x800) + small tile (440x280) + marquee (1400x560)
+// The "who unfollowed you" data comes from two real followers checks, with
+// some fictional friends leaving and new people following in between.
 // Output: store/ (24-bit PNG, no alpha, as the Web Store requires).
 import fs from "fs";
 import path from "path";
 import { execFileSync } from "child_process";
 import { boot, sleep } from "../tests/e2e/harness.mjs";
-import { showcase } from "./showcase-data.mjs";
+import { showcase, followerExtras } from "./showcase-data.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const OUT = path.join(ROOT, "store");
@@ -21,6 +23,11 @@ const NON = data.users.filter((u) => !u.fy).length;
 const H = await boot({ users: data.users, owner: data.owner, initialsAvatars: true }, { deviceScaleFactor: 2 });
 H.mock.cfg.pageSize = 100;
 const now = Date.now();
+const extras = followerExtras();
+// People who follow the showcase account that it doesn't follow back.
+const addFollower = (u) => { H.mock.users.push(u); H.mock.byId.set(u.id, u); H.mock.byHandle.set(u.h.toLowerCase(), u); };
+extras.fans.forEach(addFollower);
+let LOST = 0;
 
 async function setTheme(t) {
   const p = await H.page(`chrome-extension://${H.extId}/privacy.html`);
@@ -62,11 +69,34 @@ try {
   // ---- real data: scan the showcase account ----
   await H.page("https://x.com/home");
   await sleep(1200);
-  await H.setStore({ "x7.settings": { speed: "balanced", minDelay: 8, maxDelay: 20, restEvery: 50, restMinutes: 6, dailyLimit: 400 } });
+  await H.setStore({ "x7.settings": { speed: "balanced", minDelay: 8, maxDelay: 20, restEvery: 50, restMinutes: 6, dailyLimit: 400, trackFollowers: true } });
   await H.setStore({ "x7.whitelist": ["cafe_atlas", "pixelpinestudio", "sofiamtz_codes", "hannahlee_ux"] });
   const ext = await H.page(`chrome-extension://${H.extId}/privacy.html`);
   await ext.evaluate(() => chrome.runtime.sendMessage({ cmd: "scan" }));
   await H.waitFor(async () => { const s = await H.scan(); return s && s.status === "done" ? s : null; }, "scan", 120000);
+
+  // Who unfollowed you: the followers check after the scan saves the first
+  // snapshot (dated 4 days ago); then some friends leave, new people follow,
+  // and a second real check finds them (dated 3 hours ago).
+  const DAY0 = 864e5;
+  await H.waitFor(async () => { const f = await H.store("x7.fol"); return f && f.status === "done" ? f : null; }, "first followers check", 180000);
+  const snap0 = await H.store("x7.followers");
+  await H.setStore({ "x7.followers": { ...snap0, at: now - 4 * DAY0 } });
+  const mutuals = data.users.filter((u) => u.fy);
+  mutuals.filter((u, i) => i % 61 === 7).forEach((u) => { u.fy = false; });
+  extras.newcomers.forEach(addFollower);
+  const t1 = Date.now();
+  await ext.evaluate(() => chrome.runtime.sendMessage({ cmd: "folStart" }));
+  const fol2 = await H.waitFor(async () => { const f = await H.store("x7.fol"); return f && f.status === "done" && f.startedAt >= t1 ? f : null; }, "second followers check", 180000);
+  LOST = fol2.lost;
+  const seen = now - 3 * 3600e3;
+  const [snap1, ev] = await Promise.all([H.store("x7.followers"), H.store("x7.fevents")]);
+  await H.setStore({
+    "x7.followers": { ...snap1, at: seen },
+    "x7.fevents": ev.map((e) => ({ ...e, at: seen })),
+    "x7.fol": { ...fol2, startedAt: seen - 45000, finishedAt: seen }
+  });
+  console.log(`followers: ${fol2.lost} unfollowed, ${fol2.gained} new, ${fol2.fans} don't-follow-back`);
 
   // Ready state (light + dark)
   await popupShot("popup-ready-light", "light", "ready");
@@ -92,17 +122,8 @@ try {
     message: `Done. ${okN.toLocaleString()} read, ${naN} without a date.`
   } });
 
-  // Following review (light), filtered to non-followers, a few selected: the
-  // floating "N selected / Unfollow selected" bar shows at the bottom.
-  await dashShot("dash-following-light", "light", "following", async (p) => {
-    await p.waitForSelector("#flRows .row");
-    const cbs = await p.$$("#flRows .row .rowcb:not([disabled])");
-    for (const cb of cbs.slice(2, 5)) await cb.check();
-    await p.evaluate(() => scrollTo({ top: 0, behavior: "instant" }));
-    await p.mouse.move(5, 5);
-  }, { width: 1360, height: 680 });
-
-  // Taller copy for the marquee, where the window runs off the bottom edge
+  // Following review for the marquee, where the window runs off the bottom
+  // edge: non-followers, a few selected.
   await dashShot("dash-following-tall", "light", "following", async (p) => {
     await p.waitForSelector("#flRows .row");
     const cbs = await p.$$("#flRows .row .rowcb:not([disabled])");
@@ -110,6 +131,15 @@ try {
     await p.evaluate(() => scrollTo({ top: 0, behavior: "instant" }));
     await p.mouse.move(5, 5);
   }, { width: 1360, height: 1000 });
+
+  // Followers page (light): who unfollowed you, three still-followed ones selected
+  await dashShot("dash-followers-light", "light", "followers", async (p) => {
+    await p.waitForSelector("#foRows .row");
+    const cbs = await p.$$("#foRows .row .rowcb:not([disabled])");
+    for (const cb of cbs.slice(1, 4)) await cb.check();
+    await p.evaluate(() => scrollTo({ top: 0, behavior: "instant" }));
+    await p.mouse.move(5, 5);
+  }, { width: 1360, height: 680 });
 
   // Inactive tab (dark): 90 days+, most inactive first, a few selected
   await dashShot("dash-inactive-dark", "dark", "following", async (p) => {
@@ -216,7 +246,11 @@ const I = {
   upload: '<path d="M12 15V4"/><path d="m7 9 5-5 5 5"/><path d="M5 20h14"/>',
   sliders: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
   lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
-  moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>'
+  moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
+  userPlus: '<circle cx="10" cy="8" r="3.5"/><path d="M3.5 20c.8-3.5 3.4-5.5 6.5-5.5 1.4 0 2.7.4 3.8 1.1"/><path d="M18.5 13.5v6M15.5 16.5h6"/>',
+  bookmark: '<path d="M7 3.5h10a1 1 0 0 1 1 1V20l-6-3.8L6 20V4.5a1 1 0 0 1 1-1z"/>',
+  chart: '<path d="M4 19.5h16"/><path d="m5 15 4.5-5 4 3 5.5-6.5"/>',
+  globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.3 2.4 3.5 5.2 3.5 8.5s-1.2 6.1-3.5 8.5c-2.3-2.4-3.5-5.2-3.5-8.5s1.2-6.1 3.5-8.5z"/>'
 };
 
 const scenes = {
@@ -232,14 +266,15 @@ const scenes = {
     <div class="shot" style="position:absolute;right:100px;top:84px;width:400px"><img src="${img("popup-ready-light")}"></div>
     <div class="badge" style="right:452px;top:604px"><b>${NON}</b><span>don't follow<br>you back</span></div>
   </div>` },
-  "02-review-and-pick": { w: 1280, h: 800, html: `
+  "02-who-unfollowed-you": { w: 1280, h: 800, html: `
   <div class="scene bg-light" style="width:1280px;height:800px">
     <div style="position:absolute;left:0;right:0;top:46px;text-align:center">
-      <span class="pill">Review &amp; pick</span>
-      <h1 style="font-size:46px;margin-top:14px">Choose exactly who goes - <span class="g">and who stays</span></h1>
-      <p class="sub" style="font-size:18px;margin-top:10px">Search, filter and multi-select your whole following list. One tap on the shield protects anyone forever.</p>
+      <span class="pill">New &middot; Unfollower tracker</span>
+      <h1 style="font-size:46px;margin-top:14px">See <span class="g">who unfollowed you</span> on X</h1>
+      <p class="sub" style="font-size:18px;margin-top:10px">Every scan compares your followers with your last check: who left, who's new, and who you don't follow back.</p>
     </div>
-    <div class="win" style="position:absolute;left:110px;right:110px;top:222px"><div class="bar"><i></i><i></i><i></i><span>X Mass Unfollow &middot; Following</span></div><img src="${img("dash-following-light")}"></div>
+    <div class="win" style="position:absolute;left:110px;right:110px;top:222px"><div class="bar"><i></i><i></i><i></i><span>X Mass Unfollow &middot; Followers</span></div><img src="${img("dash-followers-light")}"></div>
+    <div class="badge" style="left:58px;top:668px"><b>&minus;${LOST}</b><span>unfollowed you<br>since your last check</span></div>
   </div>` },
   "03-inactive-and-not-blue": { w: 1280, h: 800, html: `
   <div class="scene bg-dark" style="width:1280px;height:800px">
@@ -270,12 +305,12 @@ const scenes = {
       <p class="sub" style="font-size:18px">No paywall, no limits. Your following list never leaves your browser.</p>
     </div>
     <div class="grid" style="position:absolute;left:84px;top:300px;width:720px">
-      <div class="feat"><i>${ICON(I.shield)}</i><b>Whitelist</b><p>Protect friends and favourites - never unfollowed.</p></div>
-      <div class="feat"><i>${ICON(I.sliders)}</i><b>Keep rules</b><p>Keep verified, private or big accounts automatically.</p></div>
-      <div class="feat"><i>${ICON(I.history)}</i><b>History</b><p>See everyone you unfollowed, and when.</p></div>
-      <div class="feat"><i>${ICON(I.download)}</i><b>CSV export</b><p>Download non-followers, selections and history.</p></div>
-      <div class="feat"><i>${ICON(I.upload)}</i><b>Import a list</b><p>Unfollow exactly the accounts in a CSV.</p></div>
-      <div class="feat"><i>${ICON(I.moon)}</i><b>Light &amp; dark</b><p>Easy on the eyes, day or night.</p></div>
+      <div class="feat"><i>${ICON(I.shield)}</i><b>Whitelist &amp; Keep rules</b><p>Friends, verified or big accounts are never unfollowed.</p></div>
+      <div class="feat"><i>${ICON(I.userPlus)}</i><b>Follow back &amp; undo</b><p>Follow back fans, or follow again in one click.</p></div>
+      <div class="feat"><i>${ICON(I.bookmark)}</i><b>Saved groups</b><p>Name a selection and pick it again any time.</p></div>
+      <div class="feat"><i>${ICON(I.chart)}</i><b>Growth chart</b><p>Following and followers over time.</p></div>
+      <div class="feat"><i>${ICON(I.download)}</i><b>CSV import &amp; export</b><p>Unfollow a list, or download any list.</p></div>
+      <div class="feat"><i>${ICON(I.globe)}</i><b>7 languages</b><p>Light &amp; dark mode, right-to-left too.</p></div>
     </div>
     <div class="glow" style="right:20px;top:60px;width:520px;height:620px"></div>
     <div class="shot" style="position:absolute;right:84px;top:110px;width:350px"><img src="${img("popup-done-light")}"></div>
@@ -300,7 +335,7 @@ const scenes = {
     <div style="position:absolute;left:80px;top:64px;width:540px">
       <div class="brand" style="font-size:22px"><img src="${logo}" style="filter:drop-shadow(0 10px 20px rgba(0,0,0,.25))"><div>X Mass Unfollow<small>Free &amp; Unlimited</small></div></div>
       <h1 style="margin-top:28px;font-size:50px">Unfollow everyone who doesn't follow you back</h1>
-      <p class="sub" style="color:rgba(255,255,255,.9);font-size:19px;margin-top:14px">Scan your X following list, find non-followers and inactive accounts, and clean it up in minutes.</p>
+      <p class="sub" style="color:rgba(255,255,255,.9);font-size:19px;margin-top:14px">Find non-followers and inactive accounts, see who unfollowed you, and clean up your X following list in minutes.</p>
       <div class="chips"><span>Free</span><span>Unlimited</span><span>Private</span><span>Safe pacing</span></div>
     </div>
     <div class="win" style="position:absolute;left:780px;top:66px;width:700px;box-shadow:0 40px 90px rgba(0,0,0,.35)"><div class="bar"><i></i><i></i><i></i><span>X Mass Unfollow &middot; Following</span></div><img src="${img("dash-following-tall")}"></div>

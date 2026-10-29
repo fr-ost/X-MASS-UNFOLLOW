@@ -298,11 +298,13 @@ Add X (Twitter) Mass Unfollow Tool to Chrome and clean up your following list in
 
 ## Screenshot captions (upload in this order)
 
+The Web Store takes 5 screenshots at most; these are the 5, in this order.
+
 1. `01-unfollow-non-followers.png` - Find everyone who doesn't follow you back and unfollow them in one click
-2. `02-review-and-pick.png` - Review your whole following list with search, filters and multi-select
+2. `02-who-unfollowed-you.png` - See who unfollowed you on X, who's new and who you don't follow back
 3. `03-inactive-and-not-blue.png` - Find inactive and non-verified accounts by when they last posted
 4. `04-runs-in-background.png` - Safe pacing that keeps working in the background
-5. `05-free-and-private.png` - Free, unlimited and private - whitelist, keep rules, history, CSV, light and dark
+5. `05-free-and-private.png` - Free, unlimited and private - whitelist, follow back, groups, chart, CSV, 7 languages
 
 Promo tiles: `promo-small-440x280.png`, `promo-marquee-1400x560.png`.
 

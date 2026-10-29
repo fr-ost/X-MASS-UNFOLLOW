@@ -63,3 +63,28 @@ export function showcase() {
     users
   };
 }
+
+// Followers you don't follow (fans), and people who start following you
+// between two checks - for the "Who unfollowed me" screenshot. Fictional too.
+export function followerExtras() {
+  const r = rng(20261029);
+  const make = (n, start) => {
+    const out = [];
+    const seen = new Set();
+    let id = start;
+    while (out.length < n) {
+      const f = FIRST[Math.floor(r() * FIRST.length)], l = LAST[Math.floor(r() * LAST.length)];
+      const h = (r() < .5 ? `${f}${l}` : `${f}_${l}`).toLowerCase().slice(0, 12) + Math.floor(r() * 90 + 10);
+      if (seen.has(h)) continue;
+      seen.add(h);
+      out.push({
+        id: String(id++), h, n: `${f} ${l}`, fy: true, v: r() < .08, p: r() < .05, d: false,
+        b: `${TOPICS[Math.floor(r() * TOPICS.length)]}. ${TAILS[Math.floor(r() * TAILS.length)]}`,
+        fc: Math.round(Math.exp(3 + r() * 6)), fr: Math.round(80 + r() * 900), sc: Math.round(Math.exp(2 + r() * 6)),
+        ca: new Date(Date.UTC(2010 + Math.floor(r() * 15), Math.floor(r() * 12), 1 + Math.floor(r() * 27))).toUTCString()
+      });
+    }
+    return out;
+  };
+  return { fans: make(36, 400000), newcomers: make(12, 410000) };
+}
